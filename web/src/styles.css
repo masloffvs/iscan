@@ -1,0 +1,102 @@
+@keyframes notebook-progress-primary {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+@keyframes notebook-progress-secondary {
+  0% {
+    transform: translateX(-180%);
+  }
+
+  100% {
+    transform: translateX(420%);
+  }
+}
+
+.notebook-progress-bar {
+  will-change: transform;
+}
+
+.notebook-progress-bar-primary {
+  animation: notebook-progress-primary 1.45s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.notebook-progress-bar-secondary {
+  animation: notebook-progress-secondary 1.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0.72;
+}
+
+@import "tailwindcss";
+
+@source "../index.html";
+@source "./**/*.{ts,tsx}";
+
+:root {
+  color-scheme: dark;
+  --iscan-bg: #171717;
+  --iscan-panel: #0d0d0d;
+  --iscan-edge: transparent;
+  --iscan-signal: #d4d4d8;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "-apple-system-body", "ui-sans-serif", "-apple-system", "system-ui", "Segoe UI", "Helvetica", "Apple Color Emoji", "Arial", "sans-serif", "Segoe UI Emoji", "Segoe UI Symbol";
+  background: #171717;
+  color: #f5f5f5;
+  overflow: hidden;
+}
+
+code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+::selection {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fafafa;
+}
+
+.scan-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.94), transparent 96%);
+}
+
+.scan-frame {
+  position: relative;
+}
+
+.dense-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.dense-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.dense-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dense-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.dense-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

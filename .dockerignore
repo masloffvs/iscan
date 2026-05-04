@@ -1,0 +1,8 @@
+.git
+.iscan
+build
+data
+node_modules
+*.log
+1.img
+cloak-master.log

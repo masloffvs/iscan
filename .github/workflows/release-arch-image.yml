@@ -27,6 +27,8 @@ jobs:
           sudo chmod 0644 /boot/vmlinuz*
 
       - name: Build Arch image
+        env:
+          LIBGUESTFS_BACKEND_SETTINGS: network_backend=slirp
         run: sudo -E ./scripts/build-arch-qcow.sh
 
       - name: Debug libguestfs

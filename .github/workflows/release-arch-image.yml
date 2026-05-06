@@ -1,0 +1,54 @@
+name: Release Arch Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install image tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools
+
+      - name: Build Arch image
+        run: ./scripts/build-arch-qcow.sh
+
+      - name: Generate checksum files
+        run: |
+          sha256sum Arch-Linux-x86_64-cloudimg.qcow2 > Arch-Linux-x86_64-cloudimg.qcow2.sha256
+          sha512sum Arch-Linux-x86_64-cloudimg.qcow2 > Arch-Linux-x86_64-cloudimg.qcow2.sha512
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            Arch-Linux-x86_64-cloudimg.qcow2
+            Arch-Linux-x86_64-cloudimg.qcow2.sha256
+            Arch-Linux-x86_64-cloudimg.qcow2.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Latest Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          name: Latest Build
+          files: |
+            Arch-Linux-x86_64-cloudimg.qcow2
+            Arch-Linux-x86_64-cloudimg.qcow2.sha256
+            Arch-Linux-x86_64-cloudimg.qcow2.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

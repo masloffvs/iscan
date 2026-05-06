@@ -3,6 +3,7 @@ import {
   createRemotePackageBox,
   createRemoteIsbFile,
   createRemoteVmFsDirectory,
+  deleteRemotePackageBox,
   deleteRemoteIsbFile,
   deleteRemoteVmFsEntry,
   downloadRemoteVmFsFile,
@@ -16,6 +17,7 @@ import {
   restartRemoteNotebook,
   saveRemoteNotebook,
   selectRemotePackageBox,
+  setRemotePackageBoxPrivilege,
   installRemotePackageSet,
   listRemotePackages,
   writeRemoteVmFsFile,
@@ -28,6 +30,8 @@ import {
   type RemoteIsbFileEntry,
   type RemotePackageBoxEntry,
   type RemotePackageHostInfo,
+  type RemotePackagePrivilegeLevel,
+  type RemotePackageSandboxPolicyExtensions,
   type RemoteSupportedPackageEntry,
   type RemoteNotebookCellLanguage,
   type RemoteNotebookSession,
@@ -282,9 +286,9 @@ function confirmDeleteNotebook(relativePath: string, options: { hasUnsavedChange
   );
 }
 
-export type PackageBoxModalTab = "overview" | "presets" | "packages" | "terminal";
+export type PackageBoxModalTab = "overview" | "presets" | "packages" | "terminal" | "policy";
 
-export type ModalType = "file-editor" | "file-preview" | "package-box" | null;
+export type ModalType = "file-editor" | "file-preview" | "package-box" | "browser-profile" | null;
 
 export type ContextMenuItem = {
   id: string;
@@ -344,8 +348,9 @@ type InterfaceState = {
   packageHostInfo: RemotePackageHostInfo | null;
   isPackagesLoading: boolean;
   packageActionTarget: string | null;
-  packageActionKind: "create" | "select" | "install" | null;
+  packageActionKind: "create" | "select" | "install" | "privilege" | "delete" | null;
   activeModal: ModalType;
+  activeBrowserProfileId: string | null;
   activePackageBoxId: string | null;
   activePackageBoxTab: PackageBoxModalTab;
   contextMenu: ContextMenuState | null;
@@ -366,9 +371,12 @@ type InterfaceState = {
   stopBrowserProfile: (target: string) => Promise<void>;
   navigateBrowserProfile: (target: string, url: string) => Promise<void>;
   refreshPackageList: () => Promise<void>;
-  createPackageBox: (input: { id: string; name?: string; description?: string; packages?: string[] }) => Promise<void>;
+  createPackageBox: (input: { id: string; name?: string; description?: string; packages?: string[]; sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions> }) => Promise<void>;
+  deletePackageBox: (target: string) => Promise<void>;
   selectPackageBox: (target: string) => Promise<void>;
   installPackageSet: (packages: string[], target?: string) => Promise<void>;
+  setPackageBoxPrivilege: (target: string, input: { defaultPrivilegeLevel?: RemotePackagePrivilegeLevel; allowedPrivilegeLevels?: RemotePackagePrivilegeLevel[]; sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions> }) => Promise<void>;
+  openBrowserProfileModal: (profileId: string) => void;
   openPackageBoxModal: (boxId: string, tab?: PackageBoxModalTab) => void;
   setPackageBoxModalTab: (tab: PackageBoxModalTab) => void;
   selectMode: (mode: InterfaceMode) => void;
@@ -696,6 +704,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     packageActionKind: null,
     ...clearFsSelection(),
     activeModal: null,
+    activeBrowserProfileId: null,
     activePackageBoxId: null,
     activePackageBoxTab: "overview",
     contextMenu: null,
@@ -710,12 +719,36 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
       try {
         const files = await listRemoteIsbFiles();
         set({ isbFiles: files });
+
+        let requestedPath: string | undefined;
+        let requestedCellId: string | undefined;
+        if (window.location.hash.length > 1) {
+          const hashParts = window.location.hash.slice(1).split(":");
+          requestedPath = decodeURIComponent(hashParts[0] ?? "");
+          requestedCellId = hashParts[1] ? decodeURIComponent(hashParts[1]) : undefined;
+        }
+
         if (files.length === 0) {
-          await get().createRemoteFile();
+          if (requestedPath) {
+            await get().createRemoteFile(requestedPath);
+            if (requestedCellId) {
+              set({ activeCellId: requestedCellId });
+            }
+          } else {
+            await get().createRemoteFile();
+          }
         } else {
-          const selectedPath = get().selectedFileId || files[0]?.relativePath;
+          const selectedPath = requestedPath || get().selectedFileId || files[0]?.relativePath;
           if (selectedPath) {
-            await get().openRemoteFile(selectedPath);
+            const fileExists = files.some(f => f.relativePath === selectedPath);
+            if (!fileExists && requestedPath) {
+              await get().createRemoteFile(selectedPath);
+            } else {
+              await get().openRemoteFile(selectedPath);
+            }
+            if (requestedCellId) {
+              set({ activeCellId: requestedCellId });
+            }
           }
         }
 
@@ -839,6 +872,38 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         });
       }
     },
+    deletePackageBox: async (target) => {
+      set({
+        packageActionTarget: target,
+        packageActionKind: "delete",
+        serverStatus: "connecting",
+        lastRunLabel: `${target} / deleting package box`,
+      });
+      try {
+        await deleteRemotePackageBox(target);
+        await loadPackageSnapshot({ showLoading: false });
+        set((state) => ({
+          packageActionTarget: null,
+          packageActionKind: null,
+          serverStatus: "ready",
+          lastRunLabel: `${target} / deleted`,
+          ...(state.activePackageBoxId === target
+            ? {
+              activeModal: null,
+              activePackageBoxId: null,
+              activePackageBoxTab: "overview" as const,
+            }
+            : {}),
+        }));
+      } catch (error) {
+        set({
+          packageActionTarget: null,
+          packageActionKind: null,
+          serverStatus: "error",
+          lastRunLabel: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
     selectPackageBox: async (target) => {
       set({
         packageActionTarget: target,
@@ -880,10 +945,39 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         });
       }
     },
+    setPackageBoxPrivilege: async (target, input) => {
+      set({
+        packageActionTarget: target,
+        packageActionKind: "privilege",
+        serverStatus: "connecting",
+        lastRunLabel: `${target} / updating privilege policy`,
+      });
+      try {
+        await setRemotePackageBoxPrivilege({
+          target,
+          allowedPrivilegeLevels: input.allowedPrivilegeLevels,
+          defaultPrivilegeLevel: input.defaultPrivilegeLevel,
+          sandboxPolicyExtensions: input.sandboxPolicyExtensions,
+        });
+        await loadPackageSnapshot({ showLoading: false });
+        set({ packageActionTarget: null, packageActionKind: null, serverStatus: "ready" });
+      } catch (error) {
+        set({
+          packageActionTarget: null,
+          packageActionKind: null,
+          serverStatus: "error",
+          lastRunLabel: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
     openPackageBoxModal: (boxId, tab = "overview") => set({
       activeModal: "package-box",
       activePackageBoxId: boxId,
       activePackageBoxTab: tab,
+    }),
+    openBrowserProfileModal: (profileId) => set({
+      activeModal: "browser-profile",
+      activeBrowserProfileId: profileId,
     }),
     setPackageBoxModalTab: (tab) => set({ activePackageBoxTab: tab }),
     openRemoteFile: async (relativePath) => {
@@ -1599,6 +1693,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     closeModal: () => set((state) => {
       const baseState = {
         activeModal: null,
+        activeBrowserProfileId: null,
         activePackageBoxId: null,
         activePackageBoxTab: "overview" as const,
       };
@@ -1622,4 +1717,15 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
       },
     })),
   };
+});
+
+useInterfaceStore.subscribe((state) => {
+  if (state.selectedFileId) {
+    const hash = `#${encodeURIComponent(state.selectedFileId)}${state.activeCellId ? `:${encodeURIComponent(state.activeCellId)}` : ""}`;
+    if (window.location.hash !== hash) {
+      window.history.replaceState(null, "", hash);
+    }
+  } else if (window.location.hash && state.hasBootstrapped) {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
 });

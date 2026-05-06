@@ -5,6 +5,7 @@ import path from "path";
 import { launch, launchPersistentContext } from "cloakbrowser";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import { Kit, type KitLifecycleContext } from "./kit";
+import { MicrolinkUaKit } from "./microlink-ua-kit";
 import { logger } from "../logger";
 
 export const CLOAK_KIT_ID = "cloak";
@@ -105,6 +106,33 @@ export type CloakProfileTab = {
 	title?: string;
 	active: boolean;
 };
+
+export type CloakProfileCookie = {
+	domain: string;
+	expires: number;
+	httpOnly: boolean;
+	name: string;
+	path: string;
+	sameSite?: "Lax" | "None" | "Strict";
+	secure: boolean;
+	value: string;
+};
+
+type GetProfileCookiesOptions = {
+	autoLaunch?: boolean;
+	domains?: readonly string[];
+};
+
+function normalizeCookieDomain(value: string): string {
+	return value.replace(/^#HttpOnly_/u, "").replace(/^\.+/u, "").trim().toLowerCase();
+}
+
+function cookieMatchesDomain(cookieDomain: string, requestedDomain: string): boolean {
+	const normalizedCookieDomain = normalizeCookieDomain(cookieDomain);
+	const normalizedRequestedDomain = normalizeCookieDomain(requestedDomain);
+	return normalizedCookieDomain === normalizedRequestedDomain
+		|| normalizedCookieDomain.endsWith(`.${normalizedRequestedDomain}`);
+}
 
 function shouldCopyProfileEntry(sourcePath: string): boolean {
 	const entryName = path.basename(sourcePath);
@@ -357,23 +385,15 @@ export class CloakKit extends Kit {
 	}
 
 	async fetchUserAgents(): Promise<string[]> {
-		try {
-			const cachePath = path.join(process.cwd(), ".iscan", "user-agents.json");
-			try {
-				const cached = await fs.readFile(cachePath, "utf-8");
-				return JSON.parse(cached);
-			} catch {}
-
-			const res = await fetch("https://microlink.io/user-agents.json");
-			const data = await res.json() as { user: string[] };
-			const uas = data.user || [];
-			await fs.writeFile(cachePath, JSON.stringify(uas, null, 2));
-			return uas;
-		} catch {
-			return [
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-			];
+		const userAgentKit = new MicrolinkUaKit();
+		const userAgents = await userAgentKit.listUserAgents();
+		if (userAgents.length > 0) {
+			return userAgents;
 		}
+
+		return [
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+		];
 	}
 
 	async saveProfile(profile: CloakProfile): Promise<void> {
@@ -926,6 +946,45 @@ export class CloakKit extends Kit {
 			await session.close();
 		} catch {
 			// Ignore cleanup errors.
+		}
+	}
+
+	async getProfileCookies(target: string, options: GetProfileCookiesOptions = {}): Promise<CloakProfileCookie[]> {
+		const requestedDomains = (options.domains ?? [])
+			.map((entry) => entry.trim())
+			.filter(Boolean);
+		const wasRunning = this.isProfileRunning(target);
+
+		if (!wasRunning) {
+			if (options.autoLaunch === false) {
+				throw new Error(`Browser profile ${target} is not running.`);
+			}
+
+			await this.launchProfile(target, {
+				trackSession: true,
+			});
+		}
+
+		try {
+			const context = await this.resolveBrowserContext(target);
+			const cookies = await context.cookies();
+			return cookies
+				.filter((cookie) => requestedDomains.length === 0
+					|| requestedDomains.some((domain) => cookieMatchesDomain(cookie.domain, domain)))
+				.map((cookie) => ({
+					domain: cookie.domain,
+					expires: Number.isFinite(cookie.expires) ? cookie.expires : 0,
+					httpOnly: cookie.httpOnly,
+					name: cookie.name,
+					path: cookie.path || "/",
+					...(cookie.sameSite ? { sameSite: cookie.sameSite } : {}),
+					secure: cookie.secure,
+					value: cookie.value,
+				}));
+		} finally {
+			if (!wasRunning) {
+				await this.stopProfile(target).catch(() => undefined);
+			}
 		}
 	}
 

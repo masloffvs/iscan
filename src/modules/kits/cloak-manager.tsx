@@ -5,6 +5,10 @@ import { InvalidParamsError } from "../errors";
 import { defineExecutor, defineModule, type InteractiveApplicationProps } from "../module";
 import { CloakKit, type CloakProfile } from "../../kits/cloak-kit";
 import { ProxyKit } from "../../kits/proxy-kit";
+import {
+	CLOAK_SEARCH_ENGINE_PRESET_VALUES as PRESET_SEARCH_ENGINES,
+	CLOAK_VIEWPORT_PRESET_VALUES as PRESET_VIEWPORTS,
+} from "../../kits/cloak-profile-editor";
 import { ensureCloakManagerDependencies } from "./cloak-manager.shared";
 import { formatProxyProfileUrl } from "./proxy-shared";
 
@@ -24,8 +28,6 @@ type CloakManagerParams = {
 
 const PRESET_TIMEZONES = ["", "America/New_York", "America/Chicago", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Tokyo", "Asia/Shanghai", "Australia/Sydney"];
 const PRESET_LOCALES = ["", "en-US", "en-GB", "fr-FR", "de-DE", "es-ES", "it-IT", "ja-JP", "ko-KR", "zh-CN", "ru-RU"];
-const PRESET_VIEWPORTS = ["", "1920x1080", "1440x900", "1366x768", "1280x720", "2560x1440", "3840x2160"];
-const PRESET_SEARCH_ENGINES = ["", "Google", "DuckDuckGo", "Bing", "Yahoo", "Yandex", "Brave"];
 
 function parseOptionalString(value: unknown, paramName: string): string | undefined {
 	if (value === undefined || value === null) {

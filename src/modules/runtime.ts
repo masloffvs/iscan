@@ -1,7 +1,8 @@
 import type * as React from "react";
 import type { InteractiveApplicationProps } from "./module";
+import { $axios, $axiosRegistry } from "../axios";
 import { logger } from "../logger";
-import { AI_KIT_ID, CLOAK_KIT_ID, DOMAIN_LOOKUP_KIT_ID, ELASTICSEARCH_KIT_ID, OLLAMA_KIT_ID, PROXY_KIT_ID, QEMU_KIT_ID, STORAGE_KIT_ID, Kit, type AiKit, type CloakKit, type DomainLookupKit, type ElasticSearchKit, type OllamaKit, type ProxyKit, type QemuKit, type StorageKit } from "../kits";
+import { AI_KIT_ID, AXIOS_KIT_ID, CLOAK_KIT_ID, DOMAIN_LOOKUP_KIT_ID, ELASTICSEARCH_KIT_ID, OLLAMA_KIT_ID, PROXY_KIT_ID, QEMU_KIT_ID, STORAGE_KIT_ID, Kit, type AiKit, type AxiosKit, type CloakKit, type DomainLookupKit, type ElasticSearchKit, type OllamaKit, type ProxyKit, type QemuKit, type StorageKit } from "../kits";
 import {
   createTableEntity,
   createTextEntity,
@@ -349,6 +350,8 @@ type ModuleExecutionOptions = {
 
 type ModuleEvalHostContext<THelpers extends object> = THelpers & {
   $: unknown;
+  $axios: typeof $axios;
+  $axiosRegistry: typeof $axiosRegistry;
   runtime: ModuleRuntime<THelpers>;
   logger: typeof logger;
   modules: AnyModuleDefinition[];
@@ -373,7 +376,10 @@ type ModuleEvalHostContext<THelpers extends object> = THelpers & {
   requireOllamaKit(): OllamaKit;
   getQemuKit(): QemuKit | null;
   requireQemuKit(): QemuKit;
+  getAxiosKit(): AxiosKit | null;
+  requireAxiosKit(): AxiosKit;
   run(id?: string, params?: unknown): Promise<unknown>;
+
   runModule(id: string, params?: unknown): Promise<unknown>;
   use(id: string): AnyModuleDefinition;
   useModule(id: string): AnyModuleDefinition;
@@ -382,6 +388,8 @@ type ModuleEvalHostContext<THelpers extends object> = THelpers & {
 
 type ModuleEvalContext<THelpers extends object> = ModuleEvalHostContext<THelpers> & {
   $vm: RecoverableVmManager;
+  $axios: typeof $axios;
+  $axiosRegistry: typeof $axiosRegistry;
 };
 
 export class ModuleRuntime<THelpers extends object = object> {
@@ -641,6 +649,21 @@ export class ModuleRuntime<THelpers extends object = object> {
     if (!kit) {
       throw new InvalidParamsError(
         "QemuKit is not connected in this Activity. Use $.kits.qemu.manager() or $.kits.qemu.connect({ architecture: \"x86_64\" }) first.",
+      );
+    }
+
+    return kit;
+  }
+
+  getAxiosKit(): AxiosKit | null {
+    return this.getKit<AxiosKit>(AXIOS_KIT_ID);
+  }
+
+  requireAxiosKit(): AxiosKit {
+    const kit = this.getAxiosKit();
+    if (!kit) {
+      throw new InvalidParamsError(
+        "AxiosKit is not connected in this Activity. Use $.kits.axios.with({ instanceId: \"default\" }) first.",
       );
     }
 
@@ -1468,6 +1491,8 @@ export class ModuleRuntime<THelpers extends object = object> {
       requireOllamaKit: () => this.requireOllamaKit(),
       getQemuKit: () => this.getQemuKit(),
       requireQemuKit: () => this.requireQemuKit(),
+      getAxiosKit: () => this.getAxiosKit(),
+      requireAxiosKit: () => this.requireAxiosKit(),
       runModule: async <TInnerResult = unknown, TInnerParams = unknown>(
         nextId: string,
         nextParams?: TInnerParams,
@@ -1902,6 +1927,8 @@ export class ModuleRuntime<THelpers extends object = object> {
   private createEvalContext(): ModuleEvalContext<THelpers> {
     return {
       ...this.createEvalHostContext(),
+      $axios,
+      $axiosRegistry,
       $vm: new RecoverableVmManager((snapshotPath) =>
         this.createRecoverableVm(snapshotPath),
       ),
@@ -1914,6 +1941,8 @@ export class ModuleRuntime<THelpers extends object = object> {
     return {
       ...this.helpers,
       $: this.createJsModuleProxy(undefined, executionOptions),
+      $axios,
+      $axiosRegistry,
       output: this.outputStack,
       runtime: this,
       logger,
@@ -1940,6 +1969,8 @@ export class ModuleRuntime<THelpers extends object = object> {
       requireOllamaKit: () => this.requireOllamaKit(),
       getQemuKit: () => this.getQemuKit(),
       requireQemuKit: () => this.requireQemuKit(),
+      getAxiosKit: () => this.getAxiosKit(),
+      requireAxiosKit: () => this.requireAxiosKit(),
       run: async (id?: string, params?: unknown) => {
         const moduleId = id ?? this.currentModuleId;
         if (!moduleId) {
@@ -2007,11 +2038,12 @@ export class ModuleRuntime<THelpers extends object = object> {
       "Selection mode lets mouse drag select output text; press Ctrl+Y again to return to wheel scrolling.",
       "",
       "JS runtime syntax examples: $.kits.ai.list(), $.kits.ai.chat({ prompt: 'hi' }), $.kits.ai.chat.with({ connection: 'local' }), $.kits.ai.chat.enableTools",
+      "JS runtime syntax examples: $axios.with({ instanceId: 'api', baseURL: 'https://example.com' }).get('/')",
       "JS runtime syntax examples: $.discovery.hunternow.apacheIndex({ maxDepth: 1 }), $.discovery.apacheFiles('https://example.com')",
       "Interactive kits launcher: kits",
       "Interactive QEMU workflow: $.kits.qemu.manager()",
       "Legacy use <id> still works during migration, but new hints prefer $.<category>.<module>().",
-      "Any other input is evaluated as async JavaScript inside the sandbox with helpers like $, listModules(), listKits(), workers(), use(id), run(id, params), getAiKit(), requireAiKit(), getElasticSearchKit(), requireElasticSearchKit(), getDomainLookupKit(), getQemuKit(), and requireQemuKit().",
+      "Any other input is evaluated as async JavaScript inside the sandbox with helpers like $, $axios, listModules(), listKits(), workers(), use(id), run(id, params), getAiKit(), requireAiKit(), getElasticSearchKit(), requireElasticSearchKit(), getDomainLookupKit(), getQemuKit(), and requireQemuKit().",
     ].join("\n");
   }
 

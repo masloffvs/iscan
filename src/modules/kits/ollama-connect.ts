@@ -65,7 +65,7 @@ const executor = defineExecutor<OllamaConnectParams>(async ({ params, runtime })
 
 export const ollamaConnectModule = defineModule({
 	id: "kits/ollama-connect",
-	aliases: ["kit/ollama-connect"],
+	aliases: ["kit/ollama-connect", "ollama"],
 	category: "kits",
 	description: "Connect to a local or remote Ollama instance",
 	consoleParams: OLLAMA_CONNECT_CONSOLE_PARAMS,

@@ -72,6 +72,7 @@ const executor = defineExecutor<ElasticSearchConnectParams>(async ({ params, run
 
 export const elasticSearchConnectModule = defineModule({
 	id: "kits/elastic/connect",
+	aliases: ["elastic", "es"],
 	category: "kits",
 	description: "Connect an Activity-scoped ElasticSearchKit instance for reuse inside the current Activity",
 	consoleParams: ELASTIC_CONNECT_CONSOLE_PARAMS,

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import path from "node:path";
 
 import {
@@ -6,6 +7,8 @@ import {
 	getRegisteredBpkgPackage,
 	listRegisteredBpkgPackages,
 	normalizeBpkgBindingParams,
+	type BpkgBindingRuntimeBridge,
+	type BpkgPrivilegeLevel,
 	type BpkgSupportedPackageSummary,
 	type BpkgTranspiledCommand,
 } from "../bpkg";
@@ -19,14 +22,68 @@ export const BPKG_KIT_ID = "bpkg";
 const BWRAP_DEPENDENCY_ID = "bwrap";
 const PACSTRAP_DEPENDENCY_ID = "pacstrap";
 const SUDO_DEPENDENCY_ID = "sudo";
+const SYSTEMD_NSPAWN_DEPENDENCY_ID = "systemd-nspawn";
+
+const BPKG_PRIVILEGE_LEVELS: readonly BpkgPrivilegeLevel[] = ["sandbox-ro", "sandbox-rw", "host-privileged"];
+const DEFAULT_BPKG_PRIVILEGE_LEVEL: BpkgPrivilegeLevel = "sandbox-ro";
+const DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS: readonly BpkgPrivilegeLevel[] = ["sandbox-ro", "sandbox-rw"];
+const HOST_PRIVILEGED_CAPABILITIES = ["CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_NET_RAW"] as const;
+const BPKG_ERROR_OUTPUT_MAX_LENGTH = 2048;
+const BPKG_ERROR_OUTPUT_MAX_LINES = 18;
+const BPKG_SANDBOX_SYS_MODES = ["off", "host-ro", "host-rw", "sysfs"] as const;
+const BPKG_SANDBOX_DEV_MODES = ["sandbox", "host"] as const;
+const BPKG_SANDBOX_PROC_MODES = ["sandbox", "host-ro", "host-rw"] as const;
+const BPKG_SANDBOX_BIND_MOUNT_MODES = ["ro-bind", "bind", "dev-bind"] as const;
+const DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS = {
+	devMode: "sandbox",
+	procMode: "sandbox",
+	shareNetwork: true,
+	sysMode: "off",
+} as const;
 
 export type BpkgBoxStatus = "missing" | "building" | "ready" | "error";
+
+export type { BpkgPrivilegeLevel } from "../bpkg";
+
+export type BpkgSandboxSysMode = (typeof BPKG_SANDBOX_SYS_MODES)[number];
+export type BpkgSandboxDevMode = (typeof BPKG_SANDBOX_DEV_MODES)[number];
+export type BpkgSandboxProcMode = (typeof BPKG_SANDBOX_PROC_MODES)[number];
+export type BpkgSandboxBindMountMode = (typeof BPKG_SANDBOX_BIND_MOUNT_MODES)[number];
+
+export type BpkgSandboxBindMount = {
+	mode: BpkgSandboxBindMountMode;
+	source: string;
+	target: string;
+};
+
+export type BpkgSandboxPolicyExtensions = {
+	devMode: BpkgSandboxDevMode;
+	extraBindMounts: BpkgSandboxBindMount[];
+	procMode: BpkgSandboxProcMode;
+	shareNetwork: boolean;
+	sysMode: BpkgSandboxSysMode;
+};
+
+export type BpkgSandboxPolicyExtensionsInput = {
+	devMode?: BpkgSandboxDevMode;
+	extraBindMounts?: readonly BpkgSandboxBindMount[];
+	procMode?: BpkgSandboxProcMode;
+	shareNetwork?: boolean;
+	sysMode?: BpkgSandboxSysMode;
+};
+
+export type BpkgBoxPrivilegeConfig = {
+	allowedPrivilegeLevels: BpkgPrivilegeLevel[];
+	defaultPrivilegeLevel: BpkgPrivilegeLevel;
+	sandboxPolicyExtensions: BpkgSandboxPolicyExtensions;
+};
 
 export type BpkgHostInfo = {
 	archCompatible: boolean;
 	bwrapExecutable: string | null;
 	distro: LinuxDistroInfo;
 	isRoot: boolean;
+	nspawnExecutable: string | null;
 	pacstrapExecutable: string | null;
 	platform: NodeJS.Platform;
 	sudoExecutable: string | null;
@@ -39,6 +96,9 @@ export type BpkgBoxRecord = {
 	lastError?: string;
 	name: string;
 	packages: string[];
+	allowedPrivilegeLevels: BpkgPrivilegeLevel[];
+	defaultPrivilegeLevel: BpkgPrivilegeLevel;
+	sandboxPolicyExtensions: BpkgSandboxPolicyExtensions;
 	rootPath: string;
 	status: BpkgBoxStatus;
 	updatedAt: number;
@@ -60,6 +120,17 @@ export type BpkgBindingExecutionResult = BpkgCommandResult & {
 	transpiled: BpkgTranspiledCommand;
 };
 
+type BpkgCommandStreamHandlers = {
+	onStderrChunk?: (chunk: string) => void | Promise<void>;
+	onStdoutChunk?: (chunk: string) => void | Promise<void>;
+};
+
+type ExecutePackageBindingOptions = {
+	commandHandlers?: BpkgCommandStreamHandlers;
+	privilegeLevel?: BpkgPrivilegeLevel;
+	runtime?: BpkgBindingRuntimeBridge;
+};
+
 export type BpkgInstallResult = {
 	box: BpkgBoxRecord;
 	commandResults: BpkgCommandResult[];
@@ -74,16 +145,30 @@ export type BpkgListResult = {
 	hostInfo: BpkgHostInfo;
 };
 
+export type BpkgTerminalSession = {
+	box: BpkgBoxRecord;
+	child: ReturnType<typeof Bun.spawn>;
+	cols: number;
+	command: string[];
+	commandString: string;
+	rows: number;
+	write: (data: string | Uint8Array) => Promise<void>;
+	close: () => Promise<void>;
+};
+
 type PersistedBpkgRegistry = {
 	boxes: BpkgBoxRecord[];
 	defaultBoxId: string | null;
 };
 
 type CreateBoxOptions = {
+	allowedPrivilegeLevels?: readonly BpkgPrivilegeLevel[];
 	description?: string;
+	defaultPrivilegeLevel?: BpkgPrivilegeLevel;
 	id?: string;
 	name?: string;
 	packages?: readonly string[];
+	sandboxPolicyExtensions?: BpkgSandboxPolicyExtensionsInput;
 };
 
 type ExecuteBoxCommandOptions = {
@@ -91,20 +176,31 @@ type ExecuteBoxCommandOptions = {
 	command?: string;
 	cwd?: string;
 	env?: Record<string, string>;
+	privilegeLevel?: BpkgPrivilegeLevel;
+	writableRoot?: boolean;
 	useDefaultBox?: boolean;
 };
 
-type HostRunner = "bwrap" | "pacstrap";
+type BoxCommandExecution = {
+	argv: string[];
+	box: BpkgBoxRecord;
+	privilegeLevel: BpkgPrivilegeLevel;
+	runner: HostRunner;
+};
+
+type OpenBoxTerminalOptions = {
+	cols?: number;
+	privilegeLevel?: BpkgPrivilegeLevel;
+	rows?: number;
+};
+
+type SetBoxPrivilegeOptions = Partial<BpkgBoxPrivilegeConfig>;
+
+type HostRunner = "bwrap" | "pacstrap" | "nspawn";
 
 export class BpkgCommandError extends Error {
 	constructor(public readonly result: BpkgCommandResult) {
-		super(
-			[
-				`bpkg command failed with exit code ${result.exitCode}.`,
-				`Command: ${result.commandString}`,
-				result.stderr || result.stdout || "bpkg command failed without output.",
-			].join("\n"),
-		);
+		super(formatBpkgCommandFailureMessage(result));
 		this.name = "BpkgCommandError";
 	}
 }
@@ -129,10 +225,127 @@ async function readOutput(stream: ReadableStream<Uint8Array> | null | undefined)
 	return Buffer.from(output).toString("utf8").trim();
 }
 
+async function readOutputWithHandler(
+	stream: ReadableStream<Uint8Array> | null | undefined,
+	handler?: ((chunk: string) => void | Promise<void>) | undefined,
+): Promise<string> {
+	if (!stream) {
+		return "";
+	}
+
+	if (!handler) {
+		return await readOutput(stream);
+	}
+
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let output = "";
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+
+			const chunk = decoder.decode(value, { stream: true });
+			output += chunk;
+			if (chunk.length > 0) {
+				await handler(chunk);
+			}
+		}
+
+		const tail = decoder.decode();
+		output += tail;
+		if (tail.length > 0) {
+			await handler(tail);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+
+	return output.trim();
+}
+
 function formatCommand(command: readonly string[]): string {
 	return command
 		.map((argument) => (/^[A-Za-z0-9_./:=+-]+$/u.test(argument) ? argument : JSON.stringify(argument)))
 		.join(" ");
+}
+
+function formatShellCommand(command: readonly string[]): string {
+	return command
+		.map((argument) => (/^[A-Za-z0-9_./:=+-]+$/u.test(argument) ? argument : `'${argument.replace(/'/gu, `'"'"'`)}'`))
+		.join(" ");
+}
+
+function trimDiagnosticText(
+	value: string,
+	options: { maxLength?: number; maxLines?: number } = {},
+): string {
+	const normalized = value.replace(/\r\n?/gu, "\n").trim();
+	if (normalized.length === 0) {
+		return "";
+	}
+
+	const maxLength = options.maxLength ?? BPKG_ERROR_OUTPUT_MAX_LENGTH;
+	const maxLines = options.maxLines ?? BPKG_ERROR_OUTPUT_MAX_LINES;
+	const sourceLines = normalized.split("\n");
+	let nextValue = normalized;
+	let wasTrimmed = false;
+
+	if (sourceLines.length > maxLines) {
+		nextValue = sourceLines.slice(0, maxLines).join("\n");
+		wasTrimmed = true;
+	}
+
+	if (nextValue.length > maxLength) {
+		nextValue = nextValue.slice(0, maxLength).trimEnd();
+		wasTrimmed = true;
+	}
+
+	return wasTrimmed ? `${nextValue}\n... [output trimmed]` : nextValue;
+}
+
+function formatBpkgCommandFailureMessage(result: BpkgCommandResult): string {
+	return [
+		`bpkg command failed with exit code ${result.exitCode}.`,
+		`Command: ${result.commandString}`,
+		trimDiagnosticText(result.stderr || result.stdout || "bpkg command failed without output."),
+	].join("\n");
+}
+
+function formatPersistedBoxError(error: unknown): string {
+	if (error instanceof BpkgCommandError) {
+		return trimDiagnosticText(error.message);
+	}
+
+	if (error instanceof Error) {
+		return trimDiagnosticText(error.message);
+	}
+
+	return trimDiagnosticText(String(error));
+}
+
+function decodeMountInfoPath(value: string): string {
+	return value
+		.replace(/\\040/gu, " ")
+		.replace(/\\011/gu, "\t")
+		.replace(/\\012/gu, "\n")
+		.replace(/\\134/gu, "\\");
+}
+
+function listMountedPathsWithin(content: string, rootPath: string): string[] {
+	const normalizedRootPath = path.resolve(rootPath);
+	const nestedPrefix = `${normalizedRootPath}${path.sep}`;
+	return [...new Set(
+		content
+			.split(/\r?\n/gu)
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => decodeMountInfoPath(line.split(" ")[4] ?? ""))
+			.filter((mountPath) => mountPath === normalizedRootPath || mountPath.startsWith(nestedPrefix)),
+	)]
+		.sort((left, right) => right.length - left.length);
 }
 
 function normalizeString(value: unknown, fieldName: string): string {
@@ -156,6 +369,18 @@ function normalizeOptionalString(value: unknown, fieldName: string): string | un
 	return normalizeString(value, fieldName);
 }
 
+function normalizeOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+	if (value === undefined || value === null || value === "") {
+		return undefined;
+	}
+
+	if (typeof value !== "boolean") {
+		throw new Error(`${fieldName} must be a boolean.`);
+	}
+
+	return value;
+}
+
 function normalizeStringArray(values: readonly string[]): string[] {
 	return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
@@ -177,8 +402,329 @@ function slugifyBoxId(value: string): string {
 function cloneBox(box: BpkgBoxRecord): BpkgBoxRecord {
 	return {
 		...box,
+		allowedPrivilegeLevels: [...box.allowedPrivilegeLevels],
 		packages: [...box.packages],
+		sandboxPolicyExtensions: cloneSandboxPolicyExtensions(box.sandboxPolicyExtensions),
 	};
+}
+
+function isBpkgPrivilegeLevel(value: string): value is BpkgPrivilegeLevel {
+	return BPKG_PRIVILEGE_LEVELS.includes(value as BpkgPrivilegeLevel);
+}
+
+function normalizeBpkgPrivilegeLevel(value: unknown, fieldName: string): BpkgPrivilegeLevel {
+	const normalized = normalizeString(value, fieldName);
+	if (!isBpkgPrivilegeLevel(normalized)) {
+		throw new Error(`${fieldName} must be one of: ${BPKG_PRIVILEGE_LEVELS.join(", ")}.`);
+	}
+
+	return normalized;
+}
+
+function normalizeOptionalBpkgPrivilegeLevel(value: unknown, fieldName: string): BpkgPrivilegeLevel | undefined {
+	if (value === undefined || value === null || value === "") {
+		return undefined;
+	}
+
+	return normalizeBpkgPrivilegeLevel(value, fieldName);
+}
+
+function isBpkgSandboxSysMode(value: string): value is BpkgSandboxSysMode {
+	return BPKG_SANDBOX_SYS_MODES.includes(value as BpkgSandboxSysMode);
+}
+
+function isBpkgSandboxDevMode(value: string): value is BpkgSandboxDevMode {
+	return BPKG_SANDBOX_DEV_MODES.includes(value as BpkgSandboxDevMode);
+}
+
+function isBpkgSandboxProcMode(value: string): value is BpkgSandboxProcMode {
+	return BPKG_SANDBOX_PROC_MODES.includes(value as BpkgSandboxProcMode);
+}
+
+function isBpkgSandboxBindMountMode(value: string): value is BpkgSandboxBindMountMode {
+	return BPKG_SANDBOX_BIND_MOUNT_MODES.includes(value as BpkgSandboxBindMountMode);
+}
+
+function normalizeAbsoluteSandboxPath(value: unknown, fieldName: string): string {
+	const normalized = normalizeString(value, fieldName);
+	if (!normalized.startsWith("/")) {
+		throw new Error(`${fieldName} must be an absolute path.`);
+	}
+
+	return normalized;
+}
+
+function normalizeOptionalBpkgSandboxSysMode(value: unknown, fieldName: string): BpkgSandboxSysMode | undefined {
+	const normalized = normalizeOptionalString(value, fieldName);
+	if (!normalized) {
+		return undefined;
+	}
+
+	if (!isBpkgSandboxSysMode(normalized)) {
+		throw new Error(`${fieldName} must be one of: ${BPKG_SANDBOX_SYS_MODES.join(", ")}.`);
+	}
+
+	return normalized;
+}
+
+function normalizeOptionalBpkgSandboxDevMode(value: unknown, fieldName: string): BpkgSandboxDevMode | undefined {
+	const normalized = normalizeOptionalString(value, fieldName);
+	if (!normalized) {
+		return undefined;
+	}
+
+	if (!isBpkgSandboxDevMode(normalized)) {
+		throw new Error(`${fieldName} must be one of: ${BPKG_SANDBOX_DEV_MODES.join(", ")}.`);
+	}
+
+	return normalized;
+}
+
+function normalizeOptionalBpkgSandboxProcMode(value: unknown, fieldName: string): BpkgSandboxProcMode | undefined {
+	const normalized = normalizeOptionalString(value, fieldName);
+	if (!normalized) {
+		return undefined;
+	}
+
+	if (!isBpkgSandboxProcMode(normalized)) {
+		throw new Error(`${fieldName} must be one of: ${BPKG_SANDBOX_PROC_MODES.join(", ")}.`);
+	}
+
+	return normalized;
+}
+
+function normalizeOptionalBpkgSandboxBindMountMode(value: unknown, fieldName: string): BpkgSandboxBindMountMode | undefined {
+	const normalized = normalizeOptionalString(value, fieldName);
+	if (!normalized) {
+		return undefined;
+	}
+
+	if (!isBpkgSandboxBindMountMode(normalized)) {
+		throw new Error(`${fieldName} must be one of: ${BPKG_SANDBOX_BIND_MOUNT_MODES.join(", ")}.`);
+	}
+
+	return normalized;
+}
+
+function createDefaultSandboxPolicyExtensions(): BpkgSandboxPolicyExtensions {
+	return {
+		devMode: DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.devMode,
+		extraBindMounts: [],
+		procMode: DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.procMode,
+		shareNetwork: DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.shareNetwork,
+		sysMode: DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.sysMode,
+	};
+}
+
+function cloneSandboxPolicyExtensions(value: BpkgSandboxPolicyExtensions): BpkgSandboxPolicyExtensions {
+	return {
+		devMode: value.devMode,
+		extraBindMounts: value.extraBindMounts.map((entry) => ({ ...entry })),
+		procMode: value.procMode,
+		shareNetwork: value.shareNetwork,
+		sysMode: value.sysMode,
+	};
+}
+
+function parseBpkgSandboxBindMount(value: unknown, fieldName: string): BpkgSandboxBindMount {
+	if (!isRecord(value)) {
+		throw new Error(`${fieldName} must be an object.`);
+	}
+
+	return {
+		mode: normalizeOptionalBpkgSandboxBindMountMode(value.mode, `${fieldName}.mode`) ?? "ro-bind",
+		source: normalizeAbsoluteSandboxPath(value.source, `${fieldName}.source`),
+		target: normalizeAbsoluteSandboxPath(value.target, `${fieldName}.target`),
+	};
+}
+
+export function parseBpkgSandboxPolicyExtensionsInput(
+	value: unknown,
+	fieldName = "sandboxPolicyExtensions",
+): BpkgSandboxPolicyExtensionsInput {
+	if (!isRecord(value)) {
+		throw new Error(`${fieldName} must be an object.`);
+	}
+
+	const extraBindMounts = (() => {
+		if (value.extraBindMounts === undefined || value.extraBindMounts === null) {
+			return undefined;
+		}
+
+		if (!Array.isArray(value.extraBindMounts)) {
+			throw new Error(`${fieldName}.extraBindMounts must be an array.`);
+		}
+
+		return value.extraBindMounts.map((entry, index) => parseBpkgSandboxBindMount(entry, `${fieldName}.extraBindMounts[${index}]`));
+	})();
+
+	const devMode = normalizeOptionalBpkgSandboxDevMode(value.devMode, `${fieldName}.devMode`);
+	const procMode = normalizeOptionalBpkgSandboxProcMode(value.procMode, `${fieldName}.procMode`);
+	const shareNetwork = normalizeOptionalBoolean(value.shareNetwork, `${fieldName}.shareNetwork`);
+	const sysMode = normalizeOptionalBpkgSandboxSysMode(value.sysMode, `${fieldName}.sysMode`);
+
+	return {
+		...(devMode ? { devMode } : {}),
+		...(extraBindMounts !== undefined ? { extraBindMounts } : {}),
+		...(procMode ? { procMode } : {}),
+		...(shareNetwork !== undefined ? { shareNetwork } : {}),
+		...(sysMode ? { sysMode } : {}),
+	};
+}
+
+function normalizeBpkgSandboxPolicyExtensions(value: unknown): BpkgSandboxPolicyExtensions {
+	if (value === undefined || value === null || value === "") {
+		return createDefaultSandboxPolicyExtensions();
+	}
+
+	const parsed = parseBpkgSandboxPolicyExtensionsInput(value);
+	return {
+		devMode: parsed.devMode ?? DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.devMode,
+		extraBindMounts: parsed.extraBindMounts ? parsed.extraBindMounts.map((entry) => ({ ...entry })) : [],
+		procMode: parsed.procMode ?? DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.procMode,
+		shareNetwork: parsed.shareNetwork ?? DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.shareNetwork,
+		sysMode: parsed.sysMode ?? DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS.sysMode,
+	};
+}
+
+function orderBpkgPrivilegeLevels(values: readonly BpkgPrivilegeLevel[]): BpkgPrivilegeLevel[] {
+	const uniqueValues = new Set(values);
+	return BPKG_PRIVILEGE_LEVELS.filter((value) => uniqueValues.has(value));
+}
+
+function createDefaultAllowedPrivilegeLevels(defaultPrivilegeLevel: BpkgPrivilegeLevel): BpkgPrivilegeLevel[] {
+	return defaultPrivilegeLevel === "host-privileged"
+		? [...BPKG_PRIVILEGE_LEVELS]
+		: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS];
+}
+
+function normalizeBpkgAllowedPrivilegeLevels(
+	value: unknown,
+	fieldName: string,
+	defaultPrivilegeLevel: BpkgPrivilegeLevel,
+): BpkgPrivilegeLevel[] {
+	if (value === undefined || value === null || value === "") {
+		return createDefaultAllowedPrivilegeLevels(defaultPrivilegeLevel);
+	}
+
+	if (!Array.isArray(value)) {
+		throw new Error(`${fieldName} must be an array of privilege levels.`);
+	}
+
+	const normalized = orderBpkgPrivilegeLevels(
+		value.map((entry, index) => normalizeBpkgPrivilegeLevel(entry, `${fieldName}[${index}]`)),
+	);
+	if (!normalized.includes(defaultPrivilegeLevel)) {
+		normalized.push(defaultPrivilegeLevel);
+	}
+
+	return orderBpkgPrivilegeLevels(normalized);
+}
+
+function normalizeBpkgBoxPrivilegeConfig(
+	value: { allowedPrivilegeLevels?: unknown; defaultPrivilegeLevel?: unknown; sandboxPolicyExtensions?: unknown },
+	fallbackDefaultPrivilegeLevel: BpkgPrivilegeLevel = DEFAULT_BPKG_PRIVILEGE_LEVEL,
+): BpkgBoxPrivilegeConfig {
+	const defaultPrivilegeLevel = normalizeOptionalBpkgPrivilegeLevel(
+		value.defaultPrivilegeLevel,
+		"defaultPrivilegeLevel",
+	) ?? fallbackDefaultPrivilegeLevel;
+	return {
+		allowedPrivilegeLevels: normalizeBpkgAllowedPrivilegeLevels(
+			value.allowedPrivilegeLevels,
+			"allowedPrivilegeLevels",
+			defaultPrivilegeLevel,
+		),
+		defaultPrivilegeLevel,
+		sandboxPolicyExtensions: normalizeBpkgSandboxPolicyExtensions(value.sandboxPolicyExtensions),
+	};
+}
+
+function normalizePersistedBpkgBoxPrivilegeConfig(box: Partial<BpkgBoxRecord>): BpkgBoxPrivilegeConfig {
+	try {
+		return normalizeBpkgBoxPrivilegeConfig(box, DEFAULT_BPKG_PRIVILEGE_LEVEL);
+	} catch {
+		return {
+			allowedPrivilegeLevels: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS],
+			defaultPrivilegeLevel: DEFAULT_BPKG_PRIVILEGE_LEVEL,
+			sandboxPolicyExtensions: createDefaultSandboxPolicyExtensions(),
+		};
+	}
+}
+
+function extractBpkgBoxPrivilegeConfig(
+	box: Pick<BpkgBoxRecord, "allowedPrivilegeLevels" | "defaultPrivilegeLevel" | "sandboxPolicyExtensions">,
+): BpkgBoxPrivilegeConfig {
+	return {
+		allowedPrivilegeLevels: [...box.allowedPrivilegeLevels],
+		defaultPrivilegeLevel: box.defaultPrivilegeLevel,
+		sandboxPolicyExtensions: cloneSandboxPolicyExtensions(box.sandboxPolicyExtensions),
+	};
+}
+
+function buildBwrapSandboxArgs(policy: BpkgSandboxPolicyExtensions, options: { supportsSysfs: boolean }): string[] {
+	const args: string[] = [];
+
+	if (policy.devMode === "host") {
+		args.push("--dev-bind", "/dev", "/dev");
+	} else {
+		args.push("--dev", "/dev");
+	}
+
+	switch (policy.procMode) {
+		case "host-ro":
+			args.push("--ro-bind", "/proc", "/proc");
+			break;
+		case "host-rw":
+			args.push("--bind", "/proc", "/proc");
+			break;
+		default:
+			args.push("--proc", "/proc");
+			break;
+	}
+
+	switch (policy.sysMode) {
+		case "host-ro":
+			args.push("--ro-bind", "/sys", "/sys");
+			break;
+		case "host-rw":
+			args.push("--bind", "/sys", "/sys");
+			break;
+		case "sysfs":
+			if (options.supportsSysfs) {
+				args.push("--sysfs", "/sys");
+			} else {
+				// Older bubblewrap releases do not implement --sysfs.
+				// Fallback to a read-only host bind so the sandbox still starts.
+				args.push("--ro-bind", "/sys", "/sys");
+			}
+			break;
+		default:
+			break;
+	}
+
+	for (const bindMount of policy.extraBindMounts) {
+		args.push(`--${bindMount.mode}`, bindMount.source, bindMount.target);
+	}
+
+	return args;
+}
+
+function normalizeTerminalDimension(value: number | undefined, fallback: number, range: { min: number; max: number }): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return fallback;
+	}
+
+	const rounded = Math.round(value);
+	if (rounded < range.min) {
+		return range.min;
+	}
+
+	if (rounded > range.max) {
+		return range.max;
+	}
+
+	return rounded;
 }
 
 function resolveAvailableManifestDependencyCommand(dependencyId: string): string | null {
@@ -208,10 +754,12 @@ export class BpkgKit extends Kit {
 			versionId: null,
 		},
 		isRoot: false,
+		nspawnExecutable: null,
 		pacstrapExecutable: null,
 		platform: process.platform,
 		sudoExecutable: null,
 	};
+	private bwrapSupportsSysfs = false;
 
 	constructor(options: { dataRoot?: string } = {}) {
 		super({
@@ -227,6 +775,7 @@ export class BpkgKit extends Kit {
 		await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
 		this.registry = await this.loadRegistry();
 		this.hostInfo = await this.detectHostInfo();
+		this.bwrapSupportsSysfs = await this.detectBwrapSysfsSupport();
 		this.registry.boxes = await Promise.all(this.registry.boxes.map(async (box) => await this.refreshBoxRecord(box)));
 		if (this.registry.defaultBoxId && !this.registry.boxes.some((box) => box.id === this.registry.defaultBoxId)) {
 			this.registry.defaultBoxId = null;
@@ -262,6 +811,11 @@ export class BpkgKit extends Kit {
 		return box ? cloneBox(box) : null;
 	}
 
+	getBoxPrivilege(boxId: string): BpkgBoxPrivilegeConfig | null {
+		const box = this.getBox(boxId);
+		return box ? extractBpkgBoxPrivilegeConfig(box) : null;
+	}
+
 	listSupportedPackages(): BpkgSupportedPackageSummary[] {
 		return listRegisteredBpkgPackages();
 	}
@@ -285,10 +839,28 @@ export class BpkgKit extends Kit {
 		const boxId = slugifyBoxId(candidateId);
 		const existingBox = this.registry.boxes.find((entry) => entry.id === boxId);
 		const now = Date.now();
+		const existingPrivilegeConfig = existingBox
+			? extractBpkgBoxPrivilegeConfig(existingBox)
+			: {
+				allowedPrivilegeLevels: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS],
+				defaultPrivilegeLevel: DEFAULT_BPKG_PRIVILEGE_LEVEL,
+				sandboxPolicyExtensions: createDefaultSandboxPolicyExtensions(),
+			};
+		const nextPrivilegeConfig = normalizeBpkgBoxPrivilegeConfig({
+			allowedPrivilegeLevels: options.allowedPrivilegeLevels ?? existingPrivilegeConfig.allowedPrivilegeLevels,
+			defaultPrivilegeLevel: options.defaultPrivilegeLevel ?? existingPrivilegeConfig.defaultPrivilegeLevel,
+			sandboxPolicyExtensions: options.sandboxPolicyExtensions
+				? {
+					...existingPrivilegeConfig.sandboxPolicyExtensions,
+					...options.sandboxPolicyExtensions,
+				}
+				: existingPrivilegeConfig.sandboxPolicyExtensions,
+		}, existingPrivilegeConfig.defaultPrivilegeLevel);
 		const workingBox: BpkgBoxRecord = existingBox
 			? {
 				...existingBox,
 				...(options.description ? { description: options.description } : {}),
+				...nextPrivilegeConfig,
 				name: options.name?.trim() || existingBox.name,
 				packages: [...existingBox.packages],
 				rootPath: this.resolveBoxRootPath(boxId),
@@ -299,6 +871,7 @@ export class BpkgKit extends Kit {
 			: {
 				createdAt: now,
 				...(options.description ? { description: options.description } : {}),
+				...nextPrivilegeConfig,
 				id: boxId,
 				name: options.name?.trim() || boxId,
 				packages: [],
@@ -330,7 +903,7 @@ export class BpkgKit extends Kit {
 		} catch (error) {
 			workingBox.status = "error";
 			workingBox.updatedAt = Date.now();
-			workingBox.lastError = error instanceof Error ? error.message : String(error);
+			workingBox.lastError = formatPersistedBoxError(error);
 			this.upsertBox(workingBox);
 			await this.persistRegistry();
 			throw error;
@@ -342,6 +915,43 @@ export class BpkgKit extends Kit {
 		this.registry.defaultBoxId = box.id;
 		await this.persistRegistry();
 		return box;
+	}
+
+	async setBoxPrivilege(boxId: string, options: SetBoxPrivilegeOptions): Promise<BpkgBoxRecord> {
+		const box = this.requireBox(boxId);
+		const privilegeConfig = normalizeBpkgBoxPrivilegeConfig({
+			allowedPrivilegeLevels: options.allowedPrivilegeLevels ?? box.allowedPrivilegeLevels,
+			defaultPrivilegeLevel: options.defaultPrivilegeLevel ?? box.defaultPrivilegeLevel,
+			sandboxPolicyExtensions: options.sandboxPolicyExtensions
+				? {
+					...box.sandboxPolicyExtensions,
+					...options.sandboxPolicyExtensions,
+				}
+				: box.sandboxPolicyExtensions,
+		}, box.defaultPrivilegeLevel);
+		const updatedBox: BpkgBoxRecord = {
+			...box,
+			...privilegeConfig,
+			updatedAt: Date.now(),
+		};
+		this.upsertBox(updatedBox);
+		await this.persistRegistry();
+		return updatedBox;
+	}
+
+	async deleteBox(boxId: string): Promise<{ defaultBoxId: string | null; target: string }> {
+		const box = this.requireBox(boxId);
+		await this.cleanupMountedBoxPaths(box);
+		await this.removeBoxDataPath(box.id, box.rootPath);
+		this.registry.boxes = this.registry.boxes.filter((entry) => entry.id !== box.id);
+		if (this.registry.defaultBoxId === box.id) {
+			this.registry.defaultBoxId = this.registry.boxes[0]?.id ?? null;
+		}
+		await this.persistRegistry();
+		return {
+			defaultBoxId: this.registry.defaultBoxId,
+			target: box.id,
+		};
 	}
 
 	async installSupportedPackages(packageIds: readonly string[], boxId?: string): Promise<BpkgInstallResult> {
@@ -412,69 +1022,87 @@ export class BpkgKit extends Kit {
 		boxId: string,
 		execution: ExecuteBoxCommandOptions,
 	): Promise<BpkgCommandResult> {
-		const targetBox = await this.ensureBoxReady(boxId);
-		const bwrapExecutable = this.assertBwrapSupported();
-		const homePath = this.resolveBoxHomePath(targetBox.id);
-		await fs.mkdir(homePath, { recursive: true });
+		const preparedExecution = await this.prepareBoxCommandExecution(boxId, execution);
+		return await this.runPreparedBoxCommand(preparedExecution);
+	}
 
-		const envArgs = Object.entries(execution.env ?? {}).flatMap(([key, value]) => [
-			"--setenv",
-			key,
-			value,
-		]);
-		const command = [
-			bwrapExecutable,
-			"--ro-bind",
-			targetBox.rootPath,
-			"/",
-			"--dev",
-			"/dev",
-			"--proc",
-			"/proc",
-			"--tmpfs",
-			"/tmp",
-			"--bind",
-			homePath,
-			"/root",
-			"--ro-bind",
-			"/etc/resolv.conf",
-			"/etc/resolv.conf",
-			"--setenv",
-			"HOME",
-			"/root",
-			"--setenv",
-			"USER",
-			"root",
-			...(execution.cwd ? ["--chdir", execution.cwd] : ["--chdir", "/root"]),
-			...envArgs,
-			"--unshare-all",
-			"--share-net",
-			"--hostname",
-			`${targetBox.id}-box`,
-			...(execution.argv && execution.argv.length > 0
-				? [...execution.argv]
-				: ["/bin/bash", "-lc", normalizeString(execution.command, "command")]),
-		];
+	async openBoxTerminal(boxId: string, options: OpenBoxTerminalOptions = {}): Promise<BpkgTerminalSession> {
+		const cols = normalizeTerminalDimension(options.cols, 120, { min: 40, max: 240 });
+		const rows = normalizeTerminalDimension(options.rows, 28, { min: 12, max: 120 });
+		const scriptExecutable = await this.resolveScriptExecutable();
+		const preparedExecution = await this.prepareBoxCommandExecution(boxId, {
+			argv: ["/bin/bash", "-i"],
+			env: {
+				TERM: "xterm-256color",
+				COLUMNS: String(cols),
+				LINES: String(rows),
+			},
+			privilegeLevel: options.privilegeLevel,
+			writableRoot: true,
+		});
 
-		return await this.runCommand(targetBox.id, command, { runner: "bwrap" });
+		const child = Bun.spawn({
+			cmd: [scriptExecutable, "-qfc", formatShellCommand(preparedExecution.argv), "/dev/null"],
+			cwd: process.cwd(),
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				...process.env,
+				COLUMNS: String(cols),
+				LINES: String(rows),
+				TERM: "xterm-256color",
+			},
+		});
+
+		const stdin = child.stdin;
+
+		return {
+			box: preparedExecution.box,
+			child,
+			cols,
+			command: [scriptExecutable, "-qfc", formatShellCommand(preparedExecution.argv), "/dev/null"],
+			commandString: formatCommand([scriptExecutable, "-qfc", formatShellCommand(preparedExecution.argv), "/dev/null"]),
+			rows,
+			write: async (data) => {
+				const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+				stdin.write(bytes);
+			},
+			close: async () => {
+				try {
+					stdin.end();
+				} catch {
+					// Ignore terminal writer shutdown failures after process exit.
+				}
+
+				if (child.exitCode === null) {
+					child.kill();
+				}
+
+				await child.exited.catch(() => undefined);
+				await this.restoreBoxOwnershipAfterPrivilegedExecution(preparedExecution);
+			},
+		};
 	}
 
 	async executePackageBinding(
 		packageId: string,
 		bindingId: string,
 		params: unknown,
+		options: ExecutePackageBindingOptions = {},
 	): Promise<BpkgBindingExecutionResult> {
 		const packageDefinition = getRegisteredBpkgPackage(packageId);
 		if (!packageDefinition) {
 			throw new Error(`Unsupported bpkg package '${packageId}'.`);
 		}
 
-		const targetBox = this.getDefaultBox();
-		if (!targetBox) {
+		const selectedBox = this.getDefaultBox();
+		if (!selectedBox) {
 			throw new Error(
 				`No default bpkg box is selected. Create or select one with $.bpkg.create(...) or $.bpkg.select("${packageId}").`,
 			);
 		}
+		const targetBox = await this.ensureBoxReady(selectedBox.id);
 
 		if (!targetBox.packages.includes(packageId)) {
 			throw new Error(
@@ -488,23 +1116,65 @@ export class BpkgKit extends Kit {
 		}
 
 		const bindingDefinition = getBpkgBindingDefinition(packageDefinition, bindingId);
-		const normalizedParams = normalizeBpkgBindingParams(packageDefinition, bindingId, params);
+		let normalizedParams = normalizeBpkgBindingParams(packageDefinition, bindingId, params);
+
+		if (bindingDefinition.prepare) {
+			const prepareResult = await bindingDefinition.prepare({
+				bindingId,
+				boxFileExists: async (filePath) => {
+					const resolvedPath = this.resolveBoxFilePath(targetBox, filePath);
+					return await fs.stat(resolvedPath).then(() => true).catch(() => false);
+				},
+				boxId: targetBox.id,
+				packageId,
+				packageName: packageDefinition.package,
+				params: normalizedParams,
+				readBoxFile: async (filePath) => {
+					const resolvedPath = this.resolveBoxFilePath(targetBox, filePath);
+					return await fs.readFile(resolvedPath, "utf8");
+				},
+				runtime: options.runtime ?? {
+					getKit: () => null,
+					ensureKit: async (_id, createKit) => await createKit(),
+				},
+				writeBoxFile: async (filePath, content) => {
+					const resolvedPath = this.resolveBoxFilePath(targetBox, filePath);
+					await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+					await fs.writeFile(resolvedPath, content);
+				},
+			});
+
+			if (prepareResult && Object.keys(prepareResult).length > 0) {
+				normalizedParams = normalizeBpkgBindingParams(packageDefinition, bindingId, {
+					...normalizedParams,
+					...prepareResult,
+				});
+			}
+		}
+
 		const transpiled = await transformer(normalizedParams, {
 			bindingId,
 			packageId,
 			packageName: packageDefinition.package,
 		});
-		const result = await this.executeBoxCommand(targetBox.id, transpiled);
+		const preparedExecution = await this.prepareBoxCommandExecution(targetBox.id, {
+			...transpiled,
+			privilegeLevel: options.privilegeLevel ?? transpiled.privilegeLevel,
+		});
+		const result = await this.runPreparedBoxCommand(preparedExecution, {
+			commandHandlers: options.commandHandlers,
+		});
 		const parsed = bindingDefinition.responseParser
 			? await bindingDefinition.responseParser(result, {
 				bindingId,
-				boxId: targetBox.id,
+				boxId: preparedExecution.box.id,
 				packageId,
 				packageName: packageDefinition.package,
 				params: normalizedParams,
 				readFile: async (filePath) => {
 					const fileResult = await this.executeBoxCommand(targetBox.id, {
 						argv: ["cat", filePath],
+						privilegeLevel: preparedExecution.privilegeLevel,
 					});
 					return fileResult.stdout;
 				},
@@ -520,19 +1190,44 @@ export class BpkgKit extends Kit {
 		};
 	}
 
+	private resolveBoxFilePath(box: BpkgBoxRecord, filePath: string): string {
+		const normalizedPath = normalizeString(filePath, "filePath");
+		const normalizedAbsolutePath = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
+		const boxHomePath = this.resolveBoxHomePath(box.id);
+		const basePath = normalizedAbsolutePath === "/root" || normalizedAbsolutePath.startsWith("/root/")
+			? boxHomePath
+			: box.rootPath;
+		const relativePath = normalizedAbsolutePath === "/root"
+			? ""
+			: normalizedAbsolutePath.startsWith("/root/")
+				? normalizedAbsolutePath.slice("/root/".length)
+				: normalizedAbsolutePath.slice(1);
+		const resolvedPath = path.resolve(basePath, relativePath);
+		const relativeToBase = path.relative(basePath, resolvedPath);
+		if (relativeToBase.startsWith("..") || path.isAbsolute(relativeToBase)) {
+			throw new Error(`Box file path '${filePath}' escapes the target rootfs.`);
+		}
+
+		return resolvedPath;
+	}
+
 	private async loadRegistry(): Promise<PersistedBpkgRegistry> {
 		try {
 			const payload = await fs.readFile(this.registryPath, "utf8");
 			const parsed = JSON.parse(payload) as Partial<PersistedBpkgRegistry>;
 			return {
 				boxes: Array.isArray(parsed.boxes)
-					? parsed.boxes.map((box) => ({
-						...box,
-						packages: Array.isArray(box.packages) ? normalizeStringArray(box.packages) : [],
-						rootPath: typeof box.rootPath === "string" && box.rootPath.length > 0
-							? box.rootPath
-							: this.resolveBoxRootPath(box.id),
-					}))
+					? parsed.boxes.map((box) => {
+						const privilegeConfig = normalizePersistedBpkgBoxPrivilegeConfig(box);
+						return {
+							...box,
+							...privilegeConfig,
+							packages: Array.isArray(box.packages) ? normalizeStringArray(box.packages) : [],
+							rootPath: typeof box.rootPath === "string" && box.rootPath.length > 0
+								? box.rootPath
+								: this.resolveBoxRootPath(box.id),
+						};
+					})
 					: [],
 				defaultBoxId: typeof parsed.defaultBoxId === "string" ? parsed.defaultBoxId : null,
 			};
@@ -571,8 +1266,10 @@ export class BpkgKit extends Kit {
 	private async refreshBoxRecord(box: BpkgBoxRecord): Promise<BpkgBoxRecord> {
 		const shellPath = path.join(box.rootPath, "usr", "bin", "bash");
 		const hasShell = await fs.stat(shellPath).then(() => true).catch(() => false);
+		const privilegeConfig = normalizePersistedBpkgBoxPrivilegeConfig(box);
 		return {
 			...box,
+			...privilegeConfig,
 			packages: normalizeStringArray(box.packages),
 			status: hasShell ? (box.status === "error" ? "ready" : box.status === "building" ? "ready" : box.status) : "missing",
 		};
@@ -584,6 +1281,137 @@ export class BpkgKit extends Kit {
 
 	private resolveBoxHomePath(boxId: string): string {
 		return path.resolve(this.dataRoot, "bpkg", "boxes", boxId, "home");
+	}
+
+	private resolveBoxDataPath(boxId: string): string {
+		return path.resolve(this.dataRoot, "bpkg", "boxes", boxId);
+	}
+
+	private async prepareBoxCommandExecution(
+		boxId: string,
+		execution: ExecuteBoxCommandOptions,
+	): Promise<BoxCommandExecution> {
+		const targetBox = await this.ensureBoxReady(boxId);
+		const privilegeLevel = this.resolveExecutionPrivilegeLevel(targetBox, execution);
+		if (privilegeLevel !== "sandbox-ro") {
+			await this.ensureBoxWritableOwnership(targetBox);
+		}
+		const homePath = this.resolveBoxHomePath(targetBox.id);
+		await fs.mkdir(homePath, { recursive: true });
+		const runner: HostRunner = privilegeLevel === "host-privileged" ? "nspawn" : "bwrap";
+		const baseCommand = runner === "nspawn"
+			? this.buildNspawnBoxCommand(targetBox, execution, homePath)
+			: this.buildBwrapBoxCommand(targetBox, execution, homePath, privilegeLevel === "sandbox-rw");
+
+		return {
+			box: targetBox,
+			privilegeLevel,
+			runner,
+			argv: baseCommand,
+		};
+	}
+
+	private buildBoxPayloadCommand(execution: ExecuteBoxCommandOptions): string[] {
+		return execution.argv && execution.argv.length > 0
+			? [...execution.argv]
+			: ["/bin/bash", "-lc", normalizeString(execution.command, "command")];
+	}
+
+	private buildBwrapBoxCommand(
+		targetBox: BpkgBoxRecord,
+		execution: ExecuteBoxCommandOptions,
+		homePath: string,
+		writableRoot: boolean,
+	): string[] {
+		const bwrapExecutable = this.assertBwrapSupported();
+		const sandboxPolicy = targetBox.sandboxPolicyExtensions;
+		const envArgs = Object.entries(execution.env ?? {}).flatMap(([key, value]) => [
+			"--setenv",
+			key,
+			value,
+		]);
+		return [
+			bwrapExecutable,
+			writableRoot ? "--bind" : "--ro-bind",
+			targetBox.rootPath,
+			"/",
+			...buildBwrapSandboxArgs(sandboxPolicy, { supportsSysfs: this.bwrapSupportsSysfs }),
+			"--tmpfs",
+			"/tmp",
+			"--bind",
+			homePath,
+			"/root",
+			"--ro-bind",
+			"/etc/resolv.conf",
+			"/etc/resolv.conf",
+			"--setenv",
+			"HOME",
+			"/root",
+			"--setenv",
+			"USER",
+			"root",
+			"--uid",
+			"0",
+			"--gid",
+			"0",
+			...(execution.cwd ? ["--chdir", execution.cwd] : ["--chdir", "/root"]),
+			...envArgs,
+			"--unshare-all",
+			...(sandboxPolicy.shareNetwork ? ["--share-net"] : []),
+			"--hostname",
+			`${targetBox.id}-box`,
+			...this.buildBoxPayloadCommand(execution),
+		];
+	}
+
+	private buildNspawnBoxCommand(
+		targetBox: BpkgBoxRecord,
+		execution: ExecuteBoxCommandOptions,
+		homePath: string,
+	): string[] {
+		const nspawnExecutable = this.assertNspawnSupported();
+		const envArgs = Object.entries(execution.env ?? {}).flatMap(([key, value]) => ["--setenv", `${key}=${value}`]);
+		const capabilityArgs = HOST_PRIVILEGED_CAPABILITIES.map((capability) => `--capability=${capability}`);
+		return this.prefixWithSudoIfNeeded([
+			nspawnExecutable,
+			"--quiet",
+			"--settings=no",
+			"--register=no",
+			"--as-pid2",
+			"--pipe",
+			`--directory=${targetBox.rootPath}`,
+			`--hostname=${targetBox.id}-box`,
+			"--private-users=no",
+			"--resolv-conf=copy-host",
+			"--user=root",
+			`--bind=${homePath}:/root`,
+			"--bind=/sys:/sys",
+			...capabilityArgs,
+			"--setenv",
+			"HOME=/root",
+			"--setenv",
+			"USER=root",
+			...(execution.cwd ? [`--chdir=${execution.cwd}`] : ["--chdir=/root"]),
+			...envArgs,
+			...this.buildBoxPayloadCommand(execution),
+		]);
+	}
+
+	private resolveExecutionPrivilegeLevel(
+		box: BpkgBoxRecord,
+		execution: ExecuteBoxCommandOptions,
+	): BpkgPrivilegeLevel {
+		const requestedPrivilegeLevel = execution.privilegeLevel ?? (execution.writableRoot ? "sandbox-rw" : box.defaultPrivilegeLevel);
+		if (!box.allowedPrivilegeLevels.includes(requestedPrivilegeLevel)) {
+			throw new BpkgUnsupportedError(
+				[
+					`bpkg box '${box.id}' does not allow privilege level '${requestedPrivilegeLevel}'.`,
+					`Allowed levels: ${box.allowedPrivilegeLevels.join(", ")}.`,
+				].join(" "),
+			);
+		}
+
+		return requestedPrivilegeLevel;
 	}
 
 	private resolveTargetBoxId(boxId: string | undefined): string {
@@ -603,6 +1431,7 @@ export class BpkgKit extends Kit {
 		const refreshedBox = await this.refreshBoxRecord(existingBox);
 		this.upsertBox(refreshedBox);
 		if (refreshedBox.status === "ready") {
+			await this.normalizePacmanConfig(refreshedBox.rootPath);
 			await this.persistRegistry();
 			return refreshedBox;
 		}
@@ -633,17 +1462,30 @@ export class BpkgKit extends Kit {
 				"--nodeps",
 			]);
 			await this.runCommand(box.id, command, { runner: "pacstrap" });
-			await this.disableCheckSpace(box.rootPath);
+			await this.normalizePacmanConfig(box.rootPath);
 		}
 
+		await this.ensureBoxWritableOwnership(box);
+		await this.normalizePacmanConfig(box.rootPath);
 		await fs.mkdir(this.resolveBoxHomePath(box.id), { recursive: true });
 	}
 
-	private async disableCheckSpace(rootPath: string): Promise<void> {
+	private async normalizePacmanConfig(rootPath: string): Promise<void> {
 		const pacmanConfigPath = path.join(rootPath, "etc", "pacman.conf");
 		try {
 			const configText = await fs.readFile(pacmanConfigPath, "utf8");
-			const nextText = configText.replace(/^CheckSpace$/gmu, "#CheckSpace");
+			let nextText = configText.replace(/^CheckSpace$/gmu, "#CheckSpace");
+			nextText = nextText.replace(/^DownloadUser\s*=\s*.+$/gmu, "DownloadUser = root");
+			nextText = nextText.replace(/^#DisableSandboxFilesystem$/gmu, "DisableSandboxFilesystem");
+			nextText = nextText.replace(/^#DisableSandboxSyscalls$/gmu, "DisableSandboxSyscalls");
+
+			if (!/^DownloadUser\s*=\s*root$/mu.test(nextText)) {
+				nextText = nextText.replace(
+					/^ParallelDownloads\s*=.*$/mu,
+					(match) => `${match}\nDownloadUser = root`,
+				);
+			}
+
 			if (nextText !== configText) {
 				await fs.writeFile(pacmanConfigPath, nextText, "utf8");
 			}
@@ -664,7 +1506,9 @@ export class BpkgKit extends Kit {
 			box.rootPath,
 			...packages,
 		]);
-		return await this.runCommand(box.id, command, { runner: "pacstrap" });
+		const result = await this.runCommand(box.id, command, { runner: "pacstrap" });
+		await this.ensureBoxWritableOwnership(box);
+		return result;
 	}
 
 	private async detectHostInfo(): Promise<BpkgHostInfo> {
@@ -683,10 +1527,37 @@ export class BpkgKit extends Kit {
 			bwrapExecutable: resolveAvailableManifestDependencyCommand(BWRAP_DEPENDENCY_ID),
 			distro,
 			isRoot: typeof process.getuid === "function" ? process.getuid() === 0 : false,
+			nspawnExecutable: resolveAvailableManifestDependencyCommand(SYSTEMD_NSPAWN_DEPENDENCY_ID),
 			pacstrapExecutable: resolveAvailableManifestDependencyCommand(PACSTRAP_DEPENDENCY_ID),
 			platform: process.platform,
 			sudoExecutable: resolveAvailableManifestDependencyCommand(SUDO_DEPENDENCY_ID),
 		};
+	}
+
+	private async detectBwrapSysfsSupport(): Promise<boolean> {
+		const bwrapExecutable = this.hostInfo.bwrapExecutable;
+		if (!bwrapExecutable) {
+			return false;
+		}
+
+		const child = Bun.spawn({
+			cmd: [bwrapExecutable, "--help"],
+			cwd: process.cwd(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+
+		const [exitCode, stdout, stderr] = await Promise.all([
+			child.exited,
+			readOutput(child.stdout),
+			readOutput(child.stderr),
+		]);
+		if (exitCode !== 0) {
+			return false;
+		}
+
+		return /(^|\s)--sysfs(\s|$)/mu.test(`${stdout}\n${stderr}`);
 	}
 
 	private assertArchCompatible(): void {
@@ -720,6 +1591,17 @@ export class BpkgKit extends Kit {
 		return this.hostInfo.pacstrapExecutable;
 	}
 
+	private assertNspawnSupported(): string {
+		this.assertArchCompatible();
+		if (!this.hostInfo.nspawnExecutable) {
+			throw new BpkgUnsupportedError(
+				"systemd-nspawn is required for host-privileged bpkg execution but is not available. Update manifest.dependencies.systemd-nspawn.binary or install systemd-container/systemd in PATH.",
+			);
+		}
+
+		return this.hostInfo.nspawnExecutable;
+	}
+
 	private assertSudoSupported(): string {
 		if (!this.hostInfo.sudoExecutable) {
 			throw new BpkgUnsupportedError(
@@ -738,10 +1620,112 @@ export class BpkgKit extends Kit {
 		return [this.assertSudoSupported(), "-n", ...command];
 	}
 
+	private async ensureBoxWritableOwnership(box: BpkgBoxRecord): Promise<void> {
+		if (this.hostInfo.isRoot) {
+			return;
+		}
+
+		const uid = typeof process.getuid === "function" ? process.getuid() : null;
+		const gid = typeof process.getgid === "function" ? process.getgid() : null;
+		if (uid === null || gid === null) {
+			return;
+		}
+
+		await this.cleanupMountedBoxPaths(box);
+
+		const command = this.prefixWithSudoIfNeeded([
+			"/usr/bin/chown",
+			"-R",
+			`${uid}:${gid}`,
+			box.rootPath,
+		]);
+		await this.runCommand(box.id, command, { runner: "pacstrap" });
+	}
+
+	private async cleanupMountedBoxPaths(box: Pick<BpkgBoxRecord, "id" | "rootPath">): Promise<void> {
+		const mountInfo = await fs.readFile("/proc/self/mountinfo", "utf8").catch(() => "");
+		if (!mountInfo) {
+			return;
+		}
+
+		const mountedPaths = listMountedPathsWithin(mountInfo, box.rootPath);
+		for (const mountedPath of mountedPaths) {
+			const command = this.prefixWithSudoIfNeeded([
+				"/usr/bin/umount",
+				"-l",
+				mountedPath,
+			]);
+			const result = await this.runCommand(box.id, command, {
+				allowFailure: true,
+				runner: "pacstrap",
+			});
+			if (result.exitCode !== 0) {
+				const combinedOutput = `${result.stderr}\n${result.stdout}`;
+				if (!/not mounted|no mount point specified|must be superuser|special device .* does not exist/iu.test(combinedOutput)) {
+					throw new BpkgCommandError(result);
+				}
+			}
+		}
+	}
+
+	private async removeBoxDataPath(boxId: string, rootPath: string): Promise<void> {
+		const pathsToRemove = [this.resolveBoxDataPath(boxId), rootPath]
+			.filter((entry, index, values) => values.indexOf(entry) === index);
+		for (const targetPath of pathsToRemove) {
+			const exists = await fs.stat(targetPath).then(() => true).catch(() => false);
+			if (!exists) {
+				continue;
+			}
+
+			const command = this.prefixWithSudoIfNeeded([
+				"/usr/bin/rm",
+				"-rf",
+				"--one-file-system",
+				targetPath,
+			]);
+			const result = await this.runCommand(boxId, command, {
+				allowFailure: true,
+				runner: "pacstrap",
+			});
+			const stillExists = await fs.stat(targetPath).then(() => true).catch(() => false);
+			if (result.exitCode !== 0 || stillExists) {
+				throw new BpkgCommandError({
+					...result,
+					stderr: stillExists && result.stderr.length === 0
+						? `Failed to remove ${targetPath}.`
+						: result.stderr,
+				});
+			}
+		}
+	}
+
+	private async resolveScriptExecutable(): Promise<string> {
+		const child = Bun.spawn({
+			cmd: ["/usr/bin/env", "sh", "-lc", "command -v script"],
+			cwd: process.cwd(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+
+		const [exitCode, stdout] = await Promise.all([
+			child.exited,
+			readOutput(child.stdout),
+		]);
+
+		if (exitCode !== 0 || !stdout) {
+			throw new BpkgUnsupportedError(
+				"The host `script` executable is required for interactive box terminals but was not found in PATH.",
+			);
+		}
+
+		return stdout.split(/\r?\n/u)[0]?.trim() || stdout.trim();
+	}
+
 	private async runCommand(
 		boxId: string,
 		command: readonly string[],
-		options: { allowFailure?: boolean; runner: HostRunner },
+		options: { allowFailure?: boolean; commandHandlers?: BpkgCommandStreamHandlers; runner: HostRunner },
 	): Promise<BpkgCommandResult> {
 		const child = Bun.spawn({
 			cmd: [...command],
@@ -753,8 +1737,8 @@ export class BpkgKit extends Kit {
 
 		const [exitCode, stdout, stderr] = await Promise.all([
 			child.exited,
-			readOutput(child.stdout),
-			readOutput(child.stderr),
+			readOutputWithHandler(child.stdout, options.commandHandlers?.onStdoutChunk),
+			readOutputWithHandler(child.stderr, options.commandHandlers?.onStderrChunk),
 		]);
 
 		const result: BpkgCommandResult = {
@@ -771,5 +1755,38 @@ export class BpkgKit extends Kit {
 		}
 
 		return result;
+	}
+
+	private async runPreparedBoxCommand(
+		preparedExecution: BoxCommandExecution,
+		options: { allowFailure?: boolean; commandHandlers?: BpkgCommandStreamHandlers } = {},
+	): Promise<BpkgCommandResult> {
+		let caughtError: unknown;
+		try {
+			return await this.runCommand(preparedExecution.box.id, preparedExecution.argv, {
+				allowFailure: options.allowFailure,
+				commandHandlers: options.commandHandlers,
+				runner: preparedExecution.runner,
+			});
+		} catch (error) {
+			caughtError = error;
+			throw error;
+		} finally {
+			try {
+				await this.restoreBoxOwnershipAfterPrivilegedExecution(preparedExecution);
+			} catch (ownershipError) {
+				if (caughtError === undefined) {
+					throw ownershipError;
+				}
+			}
+		}
+	}
+
+	private async restoreBoxOwnershipAfterPrivilegedExecution(preparedExecution: Pick<BoxCommandExecution, "box" | "privilegeLevel">): Promise<void> {
+		if (preparedExecution.privilegeLevel !== "host-privileged") {
+			return;
+		}
+
+		await this.ensureBoxWritableOwnership(preparedExecution.box);
 	}
 }

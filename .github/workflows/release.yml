@@ -1,0 +1,57 @@
+name: Release Binary
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build project
+        run: bun run build
+
+      - name: Package Assets
+        run: |
+          mkdir -p release-pkg
+          cp dist/iscan release-pkg/
+          cp -r dist/web-build release-pkg/
+          cp config.yml release-pkg/
+          cp README.md release-pkg/
+          tar -czvf iscan-linux-x64.tar.gz -C release-pkg .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: iscan-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Latest Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          files: iscan-linux-x64.tar.gz
+          name: Latest Build
+          body: |
+            Automated build from branch `main`.
+            Last update: ${{ github.event.head_commit.timestamp }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

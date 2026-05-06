@@ -1,5 +1,5 @@
 import { logger } from "../logger";
-import type { AiKit, CloakKit, DomainLookupKit, ElasticSearchKit, Kit, OllamaKit, ProxyKit, QemuKit, StorageKit } from "../kits";
+import type { AiKit, AxiosKit, CloakKit, DomainLookupKit, ElasticSearchKit, Kit, OllamaKit, ProxyKit, QemuKit, StorageKit } from "../kits";
 import type { ModuleRuntime } from "./runtime";
 
 import type * as React from "react";
@@ -41,6 +41,8 @@ export type ModuleExecutionContext<
 	requireOllamaKit(): OllamaKit;
 	getQemuKit(): QemuKit | null;
 	requireQemuKit(): QemuKit;
+	getAxiosKit(): AxiosKit | null;
+	requireAxiosKit(): AxiosKit;
 	runModule<TResult = unknown, TRunParams = unknown>(id: string, params?: TRunParams): Promise<TResult>;
 	useModule(id: string): ModuleDefinition<unknown, unknown, object>;
 	runInteractiveApplication<P extends InteractiveApplicationProps>(

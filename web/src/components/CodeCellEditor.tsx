@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import type { Extension } from "@codemirror/state";
+import { keymap } from "@codemirror/view";
 import {
   autocompletion,
   type Completion,
@@ -61,7 +62,7 @@ function findRuntimeFragment(source: string, cursorOffset: number): RuntimeFragm
   }
 
   const fragment = source.slice(absoluteIndex, cursorOffset);
-  if (!fragment.startsWith("$.") && !fragment.startsWith("$vm")) {
+  if (!fragment.startsWith("$.") && !fragment.startsWith("$vm") && !fragment.startsWith("$axios")) {
     return null;
   }
 
@@ -140,9 +141,10 @@ type CodeCellEditorProps = {
   language?: string;
   sessionCode?: string;
   onChange: (value: string) => void;
+  onRun?: () => void;
 };
 
-export default function CodeCellEditor({ value, language, sessionCode, onChange }: CodeCellEditorProps) {
+export default function CodeCellEditor({ value, language, sessionCode, onChange, onRun }: CodeCellEditorProps) {
   const cellLanguage = getNotebookCellLanguage(language);
 
   const extensions = useMemo<Extension[]>(() => {
@@ -151,8 +153,24 @@ export default function CodeCellEditor({ value, language, sessionCode, onChange 
       ? [sqlLanguage()]
       : [javascript({ jsx: true })];
 
+    const baseExtensions = [
+      ...languageExtensions,
+      keymap.of([
+        {
+          key: "Mod-Shift-Enter",
+          run: () => {
+            if (onRun) {
+              onRun();
+              return true;
+            }
+            return false;
+          },
+        },
+      ]),
+    ];
+
     if (!sessionCode) {
-      return languageExtensions;
+      return baseExtensions;
     }
 
     if (cellLanguage === "sql") {
@@ -187,7 +205,7 @@ export default function CodeCellEditor({ value, language, sessionCode, onChange 
       };
 
       return [
-        ...languageExtensions,
+        ...baseExtensions,
         autocompletion({
           activateOnTyping: true,
           activateOnTypingDelay: RUNTIME_COMPLETION_DELAY_MS,
@@ -236,14 +254,14 @@ export default function CodeCellEditor({ value, language, sessionCode, onChange 
     };
 
     return [
-      ...languageExtensions,
+      ...baseExtensions,
       autocompletion({
         activateOnTyping: true,
         activateOnTypingDelay: RUNTIME_COMPLETION_DELAY_MS,
         override: [runtimeCompletionSource],
       }),
     ];
-  }, [cellLanguage, sessionCode]);
+  }, [cellLanguage, sessionCode, onRun]);
 
   return (
     <CodeMirror

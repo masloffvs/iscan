@@ -1,15 +1,22 @@
 import type { ModuleDefinition } from "./module";
 import { auditViteSpaModule, auditViteSourcemapsModule } from "./audit";
+import { aircrackDslModule } from "./aircrack";
 import {
+	atoolDslModule,
 	bpkgCreateModule,
 	bpkgGeneratedPackageModules,
 	bpkgGetModule,
 	bpkgInstallModule,
 	bpkgListModule,
 	bpkgPackagesModule,
+	bpkgPrivilegeGetModule,
+	bpkgPrivilegeSetModule,
 	bpkgSelectModule,
 	bpkgUseExecModule,
+	ytdlpDslModule,
 } from "./bpkg";
+import { ftpDslModule } from "./ftp";
+import { hwDslModule } from "./hw";
 import { nmapParseXmlModule, nmapReadXmlModule } from "./nmap";
 import { coreModulesModule, coreTaskManagerModule } from "./core";
 import {
@@ -100,7 +107,7 @@ import {
 	zoomEyeSelectModule,
 } from "./discovery";
 import { gamesTicTacToeModule, gamesHangmanModule } from "./games";
-import { aiChatModule, aiConnectModule, aiListModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, kitsManagerModule, ollamaConnectModule, qemuConnectModule, qemuDeleteModule, qemuEnvironmentModule, qemuGetModule, qemuListModule, qemuManagerModule, qemuPreviewModule, qemuSaveModule, cloakManagerModule, proxyDeleteModule, proxyImportModule, proxyListModule, proxyManagerModule, proxyReplaceModule, proxySaveModule, proxyTestModule } from "./kits";
+import { aiChatModule, aiConnectModule, aiListModule, axiosModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, kitsManagerModule, microlinkUaListModule, microlinkUaRefreshModule, ollamaConnectModule, qemuConnectModule, qemuDeleteModule, qemuEnvironmentModule, qemuGetModule, qemuListModule, qemuManagerModule, qemuPreviewModule, qemuSaveModule, cloakManagerModule, proxyDeleteModule, proxyImportModule, proxyListModule, proxyManagerModule, proxyReplaceModule, proxySaveModule, proxyTestModule } from "./kits";
 import { sqlModule } from "./sql";
 
 export const registeredModules: readonly ModuleDefinition<unknown, unknown, object>[] = [
@@ -110,9 +117,16 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	bpkgPackagesModule,
 	bpkgGetModule,
 	bpkgCreateModule,
+	bpkgPrivilegeGetModule,
+	bpkgPrivilegeSetModule,
 	bpkgSelectModule,
 	bpkgInstallModule,
 	bpkgUseExecModule,
+	atoolDslModule,
+	ytdlpDslModule,
+	aircrackDslModule,
+	ftpDslModule,
+	hwDslModule,
 	nmapParseXmlModule,
 	nmapReadXmlModule,
 	...bpkgGeneratedPackageModules,
@@ -204,6 +218,8 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	proxyImportModule,
 	proxyReplaceModule,
 	proxyListModule,
+	microlinkUaListModule,
+	microlinkUaRefreshModule,
 	proxySaveModule,
 	proxyDeleteModule,
 	proxyTestModule,
@@ -221,5 +237,6 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	qemuDeleteModule,
 	qemuManagerModule,
 	discoveryHunterNowApacheIndexModule,
+	axiosModule,
 	sqlModule,
-];
+	];

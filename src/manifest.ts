@@ -10,6 +10,18 @@ import { resolveCwdOrRuntimeFilePath } from "./runtime-paths";
 const CONFIG_PATH = "config.yml";
 
 const DEFAULT_MANIFEST_DEPENDENCIES = {
+  "airmon-ng": {
+    binary: "airmon-ng",
+    aliases: [],
+    required: false,
+    description: "Aircrack-ng helper used to manage wireless monitor mode interfaces.",
+  },
+  "airodump-ng": {
+    binary: "airodump-ng",
+    aliases: [],
+    required: false,
+    description: "Aircrack-ng capture utility used for wireless survey and CSV capture sessions.",
+  },
   bwrap: {
     binary: "bwrap",
     aliases: ["bubblewrap"],
@@ -21,6 +33,48 @@ const DEFAULT_MANIFEST_DEPENDENCIES = {
     aliases: [],
     required: false,
     description: "Git CLI used to clone AUR package repositories for review.",
+  },
+  ip: {
+    binary: "ip",
+    aliases: [],
+    required: false,
+    description: "iproute2 utility used to inspect host network interface link state.",
+  },
+  iw: {
+    binary: "iw",
+    aliases: [],
+    required: false,
+    description: "Wireless utility used to inspect interfaces and read or set regulatory state.",
+  },
+  lspci: {
+    binary: "lspci",
+    aliases: [],
+    required: false,
+    description: "PCI inspection utility used to enumerate host PCI devices and drivers.",
+  },
+  lsmod: {
+    binary: "lsmod",
+    aliases: [],
+    required: false,
+    description: "Kernel module listing utility used to inspect currently loaded modules.",
+  },
+  lsusb: {
+    binary: "lsusb",
+    aliases: [],
+    required: false,
+    description: "USB inspection utility used to enumerate host USB devices.",
+  },
+  modinfo: {
+    binary: "modinfo",
+    aliases: [],
+    required: false,
+    description: "Kernel module metadata utility used to inspect driver/module information.",
+  },
+  modprobe: {
+    binary: "modprobe",
+    aliases: [],
+    required: false,
+    description: "Kernel module loader used to load host drivers and kernel modules.",
   },
   pacman: {
     binary: "pacman",
@@ -58,6 +112,18 @@ const DEFAULT_MANIFEST_DEPENDENCIES = {
     required: true,
     description: "QEMU disk image utility used to create qcow2/raw images.",
   },
+  rfkill: {
+    binary: "rfkill",
+    aliases: [],
+    required: false,
+    description: "Radio kill switch utility used to inspect blocked wireless devices.",
+  },
+  rmmod: {
+    binary: "rmmod",
+    aliases: [],
+    required: false,
+    description: "Kernel module removal utility used to unload host drivers and kernel modules.",
+  },
   xorriso: {
     binary: "xorriso",
     aliases: [],
@@ -69,6 +135,12 @@ const DEFAULT_MANIFEST_DEPENDENCIES = {
     aliases: [],
     required: false,
     description: "Privilege escalation helper used for non-root pacman mutations.",
+  },
+  "systemd-nspawn": {
+    binary: "systemd-nspawn",
+    aliases: [],
+    required: false,
+    description: "systemd container runner used for host-privileged bpkg box execution.",
   },
 } as const;
 

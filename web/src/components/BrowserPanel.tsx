@@ -24,6 +24,7 @@ export default function BrowserPanel() {
   const launchBrowserProfile = useInterfaceStore((state) => state.launchBrowserProfile);
   const stopBrowserProfile = useInterfaceStore((state) => state.stopBrowserProfile);
   const navigateBrowserProfile = useInterfaceStore((state) => state.navigateBrowserProfile);
+  const openBrowserProfileModal = useInterfaceStore((state) => state.openBrowserProfileModal);
   const [selectedBrowserId, setSelectedBrowserId] = useState<string>("");
   const [previewBrowserId, setPreviewBrowserId] = useState<string | null>(null);
   const [navigateUrl, setNavigateUrl] = useState<string>("https://www.startpage.com/");
@@ -120,6 +121,15 @@ export default function BrowserPanel() {
     return (
       <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
         <rect x="7" y="7" width="10" height="10" rx="2" />
+      </svg>
+    );
+  }
+
+  function renderSettingsIcon() {
+    return (
+      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <path d="M10.31 4.93a1 1 0 0 1 1.38-.36l.6.35a1 1 0 0 0 1 0l.6-.35a1 1 0 0 1 1.38.36l.5.86a1 1 0 0 0 .87.5h.69a1 1 0 0 1 1 1v1a1 1 0 0 0 .5.87l.6.35a1 1 0 0 1 .36 1.37l-.35.61a1 1 0 0 0 0 1l.35.6a1 1 0 0 1-.36 1.38l-.6.35a1 1 0 0 0-.5.87v.69a1 1 0 0 1-1 1h-.69a1 1 0 0 0-.87.5l-.5.86a1 1 0 0 1-1.38.36l-.6-.35a1 1 0 0 0-1 0l-.6.35a1 1 0 0 1-1.38-.36l-.5-.86a1 1 0 0 0-.87-.5h-.69a1 1 0 0 1-1-1v-.69a1 1 0 0 0-.5-.87l-.6-.35a1 1 0 0 1-.36-1.38l.35-.6a1 1 0 0 0 0-1l-.35-.61a1 1 0 0 1 .36-1.37l.6-.35a1 1 0 0 0 .5-.87v-1a1 1 0 0 1 1-1h.69a1 1 0 0 0 .87-.5l.5-.86Z" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="12" cy="12" r="3" />
       </svg>
     );
   }
@@ -244,6 +254,17 @@ export default function BrowserPanel() {
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openBrowserProfileModal(profile.id);
+                            }}
+                            title="Browser settings"
+                            className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.05] text-[#b7b7c0] transition hover:bg-white/[0.1] hover:text-white"
+                          >
+                            {renderSettingsIcon()}
+                          </button>
                           {profile.isRunning ? (
                             <button
                               type="button"

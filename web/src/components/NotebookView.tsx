@@ -261,6 +261,9 @@ const Cell = memo(function Cell({
                   language={cellLanguage}
                   sessionCode={sessionCode}
                   onChange={(value) => updateCellSource(selectedNotebookId, cell.id, value.split("\n"))}
+                  onRun={() => {
+                    void runCell(selectedNotebookId, cell.id);
+                  }}
                 />
               </Suspense>
             ) : (

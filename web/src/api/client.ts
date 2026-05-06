@@ -65,6 +65,106 @@ export type RemoteBrowserProfileEntry = {
   currentUrl?: string;
 };
 
+export type RemoteBrowserProxySelectionMode = "none" | "saved" | "preserve";
+
+export type RemoteBrowserProxySelection = {
+  label: string;
+  mode: RemoteBrowserProxySelectionMode;
+  proxyId: string | null;
+};
+
+export type RemoteBrowserProxyOption = {
+  authConfigured: boolean;
+  endpoint: string;
+  id: string;
+  name: string;
+  type: "HTTP" | "HTTPS" | "SOCKS4" | "SOCKS4A" | "SOCKS5" | "SOCKS5H";
+};
+
+export type RemoteBrowserProfileSettings = {
+  currentUrl: string | null;
+  headless: boolean;
+  humanize: boolean;
+  id: string;
+  isRunning: boolean;
+  locale: string | null;
+  name: string;
+  proxySelection: RemoteBrowserProxySelection;
+  searchEngine: string | null;
+  timezone: string | null;
+  userAgent: string | null;
+  userDataDir: string | null;
+  viewportHeight: number | null;
+  viewportWidth: number | null;
+};
+
+export type RemoteBrowserProfileSelectionMode = "empty" | "preset" | "custom-existing";
+
+export type RemoteBrowserViewportPreset = {
+  category: string;
+  description: string;
+  deviceId: string;
+  deviceName: string;
+  height: number;
+  id: string;
+  label: string;
+  orientation: "portrait" | "landscape";
+  width: number;
+};
+
+export type RemoteBrowserSearchEnginePreset = {
+  id: string;
+  label: string;
+  value: string;
+};
+
+export type RemoteBrowserUserAgentOption = {
+  browserFamily: string;
+  browserVersion: string | null;
+  deviceClass: "desktop" | "mobile" | "tablet";
+  label: string;
+  osFamily: string;
+  userAgent: string;
+};
+
+export type RemoteBrowserViewportSelection = {
+  label: string | null;
+  mode: RemoteBrowserProfileSelectionMode;
+  presetId: string | null;
+};
+
+export type RemoteBrowserUserAgentSelection = {
+  label: string | null;
+  mode: RemoteBrowserProfileSelectionMode;
+  userAgent: string | null;
+};
+
+export type RemoteMicrolinkUaStatus = {
+  aiCount: number;
+  crawlerCount: number;
+  errorMessage: string | null;
+  fetchStatus: "empty" | "success" | "error";
+  fetchedAt: string | null;
+  hasCachedPayload: boolean;
+  isStale: boolean;
+  microlinkUpdatedAt: number | null;
+  sourceUrl: string;
+  userAgentCount: number;
+};
+
+export type RemoteBrowserProfileEditorData = {
+  searchEnginePresets: RemoteBrowserSearchEnginePreset[];
+  userAgentOptions: RemoteBrowserUserAgentOption[];
+  userAgentSelection: RemoteBrowserUserAgentSelection;
+  viewportPresets: RemoteBrowserViewportPreset[];
+  viewportSelection: RemoteBrowserViewportSelection;
+};
+
+export type RemoteMicrolinkUaPayload = {
+	status: RemoteMicrolinkUaStatus;
+	userAgents: string[];
+};
+
 export type RemoteBrowserTabEntry = {
   id: string;
   url: string;
@@ -83,19 +183,44 @@ export type RemotePackageHostInfo = {
     versionId: string | null;
   };
   isRoot: boolean;
+  nspawnExecutable: string | null;
   pacstrapExecutable: string | null;
   platform: string;
   sudoExecutable: string | null;
 };
 
+export type RemotePackagePrivilegeLevel = "sandbox-ro" | "sandbox-rw" | "host-privileged";
+
+export type RemotePackageSandboxSysMode = "off" | "host-ro" | "host-rw" | "sysfs";
+export type RemotePackageSandboxDevMode = "sandbox" | "host";
+export type RemotePackageSandboxProcMode = "sandbox" | "host-ro" | "host-rw";
+export type RemotePackageSandboxBindMountMode = "ro-bind" | "bind" | "dev-bind";
+
+export type RemotePackageSandboxBindMount = {
+  mode: RemotePackageSandboxBindMountMode;
+  source: string;
+  target: string;
+};
+
+export type RemotePackageSandboxPolicyExtensions = {
+  devMode: RemotePackageSandboxDevMode;
+  extraBindMounts: RemotePackageSandboxBindMount[];
+  procMode: RemotePackageSandboxProcMode;
+  shareNetwork: boolean;
+  sysMode: RemotePackageSandboxSysMode;
+};
+
 export type RemotePackageBoxEntry = {
+  allowedPrivilegeLevels: RemotePackagePrivilegeLevel[];
   createdAt: number;
+  defaultPrivilegeLevel: RemotePackagePrivilegeLevel;
   description?: string;
   id: string;
   lastError?: string;
   name: string;
   packages: string[];
   rootPath: string;
+  sandboxPolicyExtensions: RemotePackageSandboxPolicyExtensions;
   status: "missing" | "building" | "ready" | "error";
   updatedAt: number;
 };
@@ -192,6 +317,24 @@ export function buildRemoteBrowserStreamUrl(
   return url.toString();
 }
 
+export function buildRemotePackageBoxTerminalStreamUrl(
+  target: string,
+  options: { cols?: number; rows?: number } = {},
+): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(`${protocol}//${window.location.host}${API_PREFIX}/vm/packages/terminal/stream`);
+  url.searchParams.set("target", target);
+  if (typeof options.cols === "number" && Number.isFinite(options.cols)) {
+    url.searchParams.set("cols", String(Math.round(options.cols)));
+  }
+
+  if (typeof options.rows === "number" && Number.isFinite(options.rows)) {
+    url.searchParams.set("rows", String(Math.round(options.rows)));
+  }
+
+  return url.toString();
+}
+
 function readNotebookSession(payload: ApiEnvelope<{ notebook?: NotebookDocument }>): RemoteNotebookSession {
   if (
     typeof payload.code !== "string"
@@ -281,6 +424,103 @@ export async function getRemoteBrowserTabs(target: string): Promise<RemoteBrowse
   });
 
   return payload.result?.tabs ?? [];
+}
+
+export async function getRemoteBrowserProfileSettings(target: string): Promise<{
+  editorData: RemoteBrowserProfileEditorData;
+  profile: RemoteBrowserProfileSettings;
+  proxyOptions: RemoteBrowserProxyOption[];
+  target: string;
+}> {
+  const payload = await apiRequest<{
+    editorData?: RemoteBrowserProfileEditorData;
+    profile?: RemoteBrowserProfileSettings;
+    proxyOptions?: RemoteBrowserProxyOption[];
+    target?: string;
+  }>(`/vm/browsers/${encodeURIComponent(target)}/profile`, {
+    method: "GET",
+  });
+
+  if (!payload.result?.editorData || !payload.result.profile || !Array.isArray(payload.result.proxyOptions) || typeof payload.result.target !== "string") {
+    throw buildApiError("Browser profile settings payload is incomplete.");
+  }
+
+  return {
+    editorData: payload.result.editorData,
+    profile: payload.result.profile,
+    proxyOptions: payload.result.proxyOptions,
+    target: payload.result.target,
+  };
+}
+
+export async function saveRemoteBrowserProfileSettings(
+  target: string,
+  input: {
+    headless: boolean;
+    humanize: boolean;
+    locale?: string | null;
+    name: string;
+    proxySelection: {
+      mode: RemoteBrowserProxySelectionMode;
+      proxyId?: string;
+    };
+    searchEngine?: string | null;
+    timezone?: string | null;
+    userAgent?: string | null;
+    userDataDir?: string | null;
+    viewportHeight?: number | null;
+    viewportWidth?: number | null;
+  },
+): Promise<{
+  editorData: RemoteBrowserProfileEditorData;
+  profile: RemoteBrowserProfileSettings;
+  proxyOptions: RemoteBrowserProxyOption[];
+  target: string;
+}> {
+  const payload = await apiRequest<{
+    editorData?: RemoteBrowserProfileEditorData;
+    profile?: RemoteBrowserProfileSettings;
+    proxyOptions?: RemoteBrowserProxyOption[];
+    target?: string;
+  }>(`/vm/browsers/${encodeURIComponent(target)}/profile`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  if (!payload.result?.editorData || !payload.result.profile || !Array.isArray(payload.result.proxyOptions) || typeof payload.result.target !== "string") {
+    throw buildApiError("Browser profile save payload is incomplete.");
+  }
+
+  return {
+    editorData: payload.result.editorData,
+    profile: payload.result.profile,
+    proxyOptions: payload.result.proxyOptions,
+    target: payload.result.target,
+  };
+}
+
+export async function getRemoteMicrolinkUaPayload(): Promise<RemoteMicrolinkUaPayload> {
+  const payload = await apiRequest<RemoteMicrolinkUaPayload>("/vm/kits/microlink-ua", {
+    method: "GET",
+  });
+
+  if (!payload.result?.status || !Array.isArray(payload.result.userAgents)) {
+    throw buildApiError("Microlink UA payload is incomplete.");
+  }
+
+  return payload.result;
+}
+
+export async function refreshRemoteMicrolinkUaPayload(): Promise<RemoteMicrolinkUaPayload> {
+  const payload = await apiRequest<RemoteMicrolinkUaPayload>("/vm/kits/microlink-ua", {
+    method: "POST",
+  });
+
+  if (!payload.result?.status || !Array.isArray(payload.result.userAgents)) {
+    throw buildApiError("Microlink UA refresh payload is incomplete.");
+  }
+
+  return payload.result;
 }
 
 export async function activateRemoteBrowserTab(target: string, tabId: string): Promise<{ target: string; tabId: string }> {
@@ -435,6 +675,9 @@ export async function createRemotePackageBox(input: {
   name?: string;
   description?: string;
   packages?: string[];
+  defaultPrivilegeLevel?: RemotePackagePrivilegeLevel;
+  allowedPrivilegeLevels?: RemotePackagePrivilegeLevel[];
+  sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions>;
 }): Promise<RemotePackageBoxEntry> {
   const payload = await apiRequest<{ box?: RemotePackageBoxEntry }>("/vm/packages/create", {
     method: "POST",
@@ -461,6 +704,24 @@ export async function selectRemotePackageBox(target: string): Promise<RemotePack
   return payload.result.box;
 }
 
+export async function deleteRemotePackageBox(target: string): Promise<{ defaultBoxId: string | null; target: string }> {
+  const payload = await apiRequest<{ defaultBoxId?: string | null; target?: string }>("/vm/packages/delete", {
+    method: "POST",
+    body: JSON.stringify({ target }),
+  });
+
+  if (payload.result?.target !== target) {
+    throw buildApiError("Package box delete payload is incomplete.");
+  }
+
+  return {
+    defaultBoxId: typeof payload.result.defaultBoxId === "string" || payload.result.defaultBoxId === null
+      ? payload.result.defaultBoxId
+      : null,
+    target: payload.result.target,
+  };
+}
+
 export async function installRemotePackageSet(
   packages: string[],
   target?: string,
@@ -475,6 +736,24 @@ export async function installRemotePackageSet(
   }
 
   return payload.result;
+}
+
+export async function setRemotePackageBoxPrivilege(input: {
+  target: string;
+  defaultPrivilegeLevel?: RemotePackagePrivilegeLevel;
+  allowedPrivilegeLevels?: RemotePackagePrivilegeLevel[];
+  sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions>;
+}): Promise<RemotePackageBoxEntry> {
+  const payload = await apiRequest<{ target?: string; box?: RemotePackageBoxEntry }>("/vm/packages/privilege", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  if (payload.result?.target !== input.target || !payload.result.box) {
+    throw buildApiError("Package privilege payload is incomplete.");
+  }
+
+  return payload.result.box;
 }
 
 export async function saveRemoteNotebook(code: string, notebook: NotebookDocument): Promise<RemoteNotebookSession> {

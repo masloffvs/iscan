@@ -127,6 +127,27 @@ export type ZoomEyeQueryHistoryRow = {
 	use_count: number;
 };
 
+export type MicrolinkUaSnapshotStatus = "success" | "error";
+
+export type PersistedMicrolinkUaSnapshotRecord = {
+	errorMessage: string | null;
+	fetchStatus: MicrolinkUaSnapshotStatus;
+	fetchedAt: string;
+	microlinkUpdatedAt: number | null;
+	payloadJson: string | null;
+	sourceUrl: string;
+};
+
+export type MicrolinkUaSnapshotRow = {
+	error_message: string | null;
+	fetch_status: MicrolinkUaSnapshotStatus;
+	fetched_at: string;
+	microlink_updated_at: number | null;
+	payload_json: string | null;
+	snapshot_key: string;
+	source_url: string;
+};
+
 /**
  * StorageKit provides a singleton persistence layer using Drizzle ORM and bun:sqlite.
  * It ensures that only one database connection is active to prevent SQLite locking issues.
@@ -137,6 +158,7 @@ export class StorageKit extends Kit {
 	private workerLogStoreReady = false;
 	private zoomeyeHostStoreReady = false;
 	private zoomeyeQueryHistoryStoreReady = false;
+	private microlinkUaStoreReady = false;
 
 	constructor() {
 		super({
@@ -243,6 +265,60 @@ export class StorageKit extends Kit {
 		this.workerLogStoreReady = false;
 		this.zoomeyeHostStoreReady = false;
 		this.zoomeyeQueryHistoryStoreReady = false;
+		this.microlinkUaStoreReady = false;
+	}
+
+	upsertMicrolinkUaSnapshot(record: PersistedMicrolinkUaSnapshotRecord): MicrolinkUaSnapshotRow {
+		this.ensureMicrolinkUaStore();
+		this.getClient().query(
+			`INSERT INTO microlink_ua_snapshot (
+				snapshot_key,
+				source_url,
+				payload_json,
+				fetched_at,
+				microlink_updated_at,
+				fetch_status,
+				error_message
+			) VALUES (
+				'latest', ?1, ?2, ?3, ?4, ?5, ?6
+			)
+			ON CONFLICT(snapshot_key) DO UPDATE SET
+				source_url = excluded.source_url,
+				payload_json = excluded.payload_json,
+				fetched_at = excluded.fetched_at,
+				microlink_updated_at = excluded.microlink_updated_at,
+				fetch_status = excluded.fetch_status,
+				error_message = excluded.error_message`,
+		)
+			.run(
+				record.sourceUrl,
+				record.payloadJson,
+				record.fetchedAt,
+				record.microlinkUpdatedAt,
+				record.fetchStatus,
+				record.errorMessage,
+			);
+
+		return this.getClient().query(
+			`SELECT snapshot_key, source_url, payload_json, fetched_at,
+			        microlink_updated_at, fetch_status, error_message
+			FROM microlink_ua_snapshot
+			WHERE snapshot_key = 'latest'
+			LIMIT 1`,
+		)
+			.get() as MicrolinkUaSnapshotRow;
+	}
+
+	selectMicrolinkUaSnapshot(): MicrolinkUaSnapshotRow | null {
+		this.ensureMicrolinkUaStore();
+		return this.getClient().query(
+			`SELECT snapshot_key, source_url, payload_json, fetched_at,
+			        microlink_updated_at, fetch_status, error_message
+			FROM microlink_ua_snapshot
+			WHERE snapshot_key = 'latest'
+			LIMIT 1`,
+		)
+			.get() as MicrolinkUaSnapshotRow | null;
 	}
 
 	upsertZoomEyeHosts(records: readonly PersistedZoomEyeHostRecord[]): ZoomEyeHostUpsertSummary {
@@ -614,6 +690,29 @@ export class StorageKit extends Kit {
 		`);
 
 		this.zoomeyeQueryHistoryStoreReady = true;
+	}
+
+	private ensureMicrolinkUaStore(): void {
+		if (this.microlinkUaStoreReady) {
+			return;
+		}
+
+		this.getClient().exec(`
+			CREATE TABLE IF NOT EXISTS microlink_ua_snapshot (
+				snapshot_key TEXT PRIMARY KEY,
+				source_url TEXT NOT NULL,
+				payload_json TEXT,
+				fetched_at TEXT NOT NULL,
+				microlink_updated_at INTEGER,
+				fetch_status TEXT NOT NULL,
+				error_message TEXT
+			);
+
+			CREATE INDEX IF NOT EXISTS microlink_ua_snapshot_fetched_at_idx
+			ON microlink_ua_snapshot(fetched_at DESC);
+		`);
+
+		this.microlinkUaStoreReady = true;
 	}
 
 	private pruneBackgroundWorkerLogs(relativeScriptPath: string): void {

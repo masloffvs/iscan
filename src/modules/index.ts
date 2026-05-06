@@ -148,22 +148,35 @@ export type {
 	ParuRemoveParams,
 } from "./paru";
 export {
+	atoolDslModule,
 	bpkgCreateModule,
 	bpkgGeneratedPackageModules,
 	bpkgGetModule,
 	bpkgInstallModule,
 	bpkgListModule,
 	bpkgPackagesModule,
+	bpkgPrivilegeGetModule,
+	bpkgPrivilegeSetModule,
 	bpkgSelectModule,
 	bpkgUseExecModule,
+	ytdlpDslModule,
 } from "./bpkg";
 export type {
 	BpkgCreateParams,
 	BpkgGetParams,
 	BpkgInstallParams,
+	BpkgPrivilegeGetParams,
+	BpkgPrivilegeSetParams,
 	BpkgSelectParams,
 	BpkgUseExecParams,
+	AtoolDslParams,
 } from "./bpkg";
+export { aircrackDslModule } from "./aircrack";
+export type { AircrackDslParams } from "./aircrack";
+export { ftpDslModule } from "./ftp";
+export type { FtpDslParams } from "./ftp";
+export { hwDslModule } from "./hw";
+export type { HwDslParams } from "./hw";
 export {
 	nmapParseXmlModule,
 	nmapReadXmlModule,

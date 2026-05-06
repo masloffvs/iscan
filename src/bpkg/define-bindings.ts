@@ -25,8 +25,11 @@ export type BpkgBindingDefinition = {
 	description: string;
 	defaultParameterName?: string;
 	parameters?: Record<string, BpkgBindingParameterDefinition>;
+	prepare?: BpkgBindingPrepare;
 	responseParser?: BpkgBindingResponseParser;
 };
+
+export type BpkgPrivilegeLevel = "sandbox-ro" | "sandbox-rw" | "host-privileged";
 
 export type BpkgTranspiledCommand = {
 	argv?: readonly string[];
@@ -34,6 +37,7 @@ export type BpkgTranspiledCommand = {
 	createdAt: number;
 	cwd?: string;
 	env?: Record<string, string>;
+	privilegeLevel?: BpkgPrivilegeLevel;
 };
 
 export type BpkgBindingTransformerContext = {
@@ -41,6 +45,30 @@ export type BpkgBindingTransformerContext = {
 	packageId: string;
 	packageName: string;
 };
+
+export type BpkgBindingRuntimeBridge = {
+	getKit<T = unknown>(id: string): T | null;
+	ensureKit<T = unknown>(
+		id: string,
+		createKit: () => T | Promise<T>,
+		context?: { reason?: string },
+	): Promise<T>;
+};
+
+export type BpkgBindingPrepareContext = BpkgBindingTransformerContext & {
+	boxId: string;
+	params: Record<string, unknown>;
+	runtime: BpkgBindingRuntimeBridge;
+	boxFileExists(filePath: string): Promise<boolean>;
+	readBoxFile(filePath: string): Promise<string>;
+	writeBoxFile(filePath: string, content: string | Uint8Array): Promise<void>;
+};
+
+export type BpkgBindingPrepareResult = void | Partial<Record<string, unknown>>;
+
+export type BpkgBindingPrepare = (
+	context: BpkgBindingPrepareContext,
+) => BpkgBindingPrepareResult | Promise<BpkgBindingPrepareResult>;
 
 export type BpkgBindingTransformer = (
 	params: Record<string, unknown>,

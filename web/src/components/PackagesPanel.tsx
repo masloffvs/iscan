@@ -9,6 +9,7 @@ function describeHostInfo(hostInfo: ReturnType<typeof useInterfaceStore.getState
 
   const details = [hostInfo.archCompatible ? "Arch host" : `Unsupported: ${hostInfo.distro.prettyName ?? hostInfo.platform}`];
   details.push(hostInfo.bwrapExecutable ? "bwrap" : "no bwrap");
+  details.push(hostInfo.nspawnExecutable ? "nspawn" : "no nspawn");
   details.push(hostInfo.pacstrapExecutable ? "pacstrap" : "no pacstrap");
   details.push(hostInfo.sudoExecutable ? "sudo" : "no sudo");
   return details.join(" · ");
@@ -19,6 +20,7 @@ function describeBox(box: RemotePackageBoxEntry, isDefault: boolean): string {
   if (isDefault) {
     details.push("default");
   }
+  details.push(box.defaultPrivilegeLevel);
   details.push(box.packages.length > 0 ? `${box.packages.length} supported package(s)` : "empty");
 
   return details.join(" · ");
@@ -30,6 +32,15 @@ function formatUpdatedAt(timestamp: number): string {
   }
 
   return new Date(timestamp).toLocaleString();
+}
+
+function summarizeBoxError(value: string, maxLength = 220): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trimEnd()}...`;
 }
 
 function normalizeBoxId(value: string): string {
@@ -80,6 +91,7 @@ export default function PackagesPanel() {
   const packageActionKind = useInterfaceStore((state) => state.packageActionKind);
   const refreshPackageList = useInterfaceStore((state) => state.refreshPackageList);
   const createPackageBox = useInterfaceStore((state) => state.createPackageBox);
+  const deletePackageBox = useInterfaceStore((state) => state.deletePackageBox);
   const selectPackageBox = useInterfaceStore((state) => state.selectPackageBox);
   const openPackageBoxModal = useInterfaceStore((state) => state.openPackageBoxModal);
 
@@ -191,6 +203,7 @@ export default function PackagesPanel() {
                 {sortedBoxes.map((box, index) => {
                   const isDefault = box.id === defaultPackageBoxId;
                   const isSelecting = packageActionKind === "select" && packageActionTarget === box.id;
+                  const isDeleting = packageActionKind === "delete" && packageActionTarget === box.id;
                   const rowClassName = isDefault
                     ? "bg-emerald-400/[0.08]"
                     : index % 2 === 0
@@ -217,7 +230,7 @@ export default function PackagesPanel() {
                       <td className="px-2.5 py-2.5 text-[#8f8f98]">
                         <p>{describeBox(box, isDefault)}</p>
                         <p className="mt-1 text-[10px] text-[#72727c]">Updated {formatUpdatedAt(box.updatedAt)}</p>
-                        {box.lastError ? <p className="mt-1 text-[10px] text-rose-300">{box.lastError}</p> : null}
+                        {box.lastError ? <p className="mt-1 text-[10px] text-rose-300">{summarizeBoxError(box.lastError)}</p> : null}
                       </td>
                       <td className="px-2.5 py-2.5 text-[#72727c]">
                         <p className="line-clamp-2 text-[10px]">{box.packages.length > 0 ? box.packages.join(", ") : "empty"}</p>
@@ -227,7 +240,7 @@ export default function PackagesPanel() {
                           <IconButton
                             ariaLabel={isDefault ? "Default box" : "Set as default box"}
                             active={isDefault}
-                            disabled={isDefault || isSelecting}
+                            disabled={isDefault || isSelecting || isDeleting}
                             onClick={() => { void selectPackageBox(box.id); }}
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
@@ -240,6 +253,27 @@ export default function PackagesPanel() {
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
                               <path d="M7 17 17 7" />
                               <path d="M8 7h9v9" />
+                            </svg>
+                          </IconButton>
+
+                          <IconButton
+                            ariaLabel="Delete box"
+                            disabled={isDeleting}
+                            onClick={() => {
+                              const confirmed = window.confirm(
+                                `Delete box '${box.name}' (${box.id}) and all stored data? This cannot be undone.`,
+                              );
+                              if (!confirmed) {
+                                return;
+                              }
+
+                              void deletePackageBox(box.id);
+                            }}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                              <path d="M3 6h18" />
+                              <path d="M8 6V4h8v2" />
+                              <path d="m6 6 1 14h10l1-14" />
                             </svg>
                           </IconButton>
                         </div>

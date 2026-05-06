@@ -7,6 +7,7 @@ const NotebookView = lazy(() => import("./components/NotebookView"));
 const VmFilePanel = lazy(() => import("./components/VmFilePanel"));
 const StatusBar = lazy(() => import("./components/StatusBar"));
 const Modal = lazy(() => import("./components/Modal"));
+const BrowserProfileModalContent = lazy(() => import("./components/BrowserProfileModalContent"));
 const PackageBoxModalContent = lazy(() => import("./components/PackageBoxModalContent"));
 const ContextMenu = lazy(() => import("./components/ContextMenu"));
 const Tooltip = lazy(() => import("./components/Tooltip"));
@@ -86,6 +87,8 @@ export default function App() {
   const saveFsFile = useInterfaceStore((state) => state.saveFsFile);
   const isFsSaving = useInterfaceStore((state) => state.isFsSaving);
   const activeModal = useInterfaceStore((state) => state.activeModal);
+  const activeBrowserProfileId = useInterfaceStore((state) => state.activeBrowserProfileId);
+  const browserProfiles = useInterfaceStore((state) => state.browserProfiles);
   const activePackageBoxId = useInterfaceStore((state) => state.activePackageBoxId);
   const packageBoxes = useInterfaceStore((state) => state.packageBoxes);
 
@@ -95,6 +98,15 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "enter" && (event.ctrlKey || event.metaKey) && event.shiftKey) {
+        event.preventDefault();
+        const state = useInterfaceStore.getState();
+        if (state.selectedFileId && state.activeCellId) {
+          void state.runCell(state.selectedFileId, state.activeCellId);
+        }
+        return;
+      }
+
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) {
         return;
       }
@@ -124,10 +136,13 @@ export default function App() {
 
   const rightPanelTab = useInterfaceStore((state) => state.rightPanelTab);
   const rightPanelWidth = rightPanelTab === "browsers" || rightPanelTab === "packages" ? 640 : 392;
+  const activeBrowserProfile = browserProfiles.find((entry) => entry.id === activeBrowserProfileId) ?? null;
   const activePackageBox = packageBoxes.find((entry) => entry.id === activePackageBoxId) ?? null;
   const modalTitle = activeModal === "package-box"
     ? activePackageBox?.name ?? activePackageBoxId ?? "Box"
-    : selectedFsPath.split('/').pop() || "File Editor";
+    : activeModal === "browser-profile"
+      ? activeBrowserProfile?.name ?? activeBrowserProfileId ?? "Browser Settings"
+      : selectedFsPath.split('/').pop() || "File Editor";
 
   return (
     <main className="relative isolate h-screen flex flex-col overflow-hidden bg-[#171717] text-[#f5f5f5]">
@@ -165,6 +180,7 @@ export default function App() {
           <Suspense fallback={null}>
             <Modal title={modalTitle}>
               {activeModal === "file-editor" || activeModal === "file-preview" ? <FileModalContent /> : null}
+              {activeModal === "browser-profile" ? <BrowserProfileModalContent /> : null}
               {activeModal === "package-box" ? <PackageBoxModalContent /> : null}
             </Modal>
           </Suspense>

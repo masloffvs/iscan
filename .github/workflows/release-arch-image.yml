@@ -21,8 +21,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libguestfs-tools
 
+      - name: Prepare libguestfs on Ubuntu
+        run: |
+          # libguestfs/supermin on Ubuntu needs the host kernel readable.
+          sudo chmod 0644 /boot/vmlinuz*
+
       - name: Build Arch image
-        run: ./scripts/build-arch-qcow.sh
+        run: sudo -E ./scripts/build-arch-qcow.sh
+
+      - name: Debug libguestfs
+        if: failure()
+        run: |
+          sudo env LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1 libguestfs-test-tool
 
       - name: Generate checksum files
         run: |

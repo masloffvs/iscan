@@ -35,10 +35,38 @@ jobs:
           cp README.md release-pkg/
           tar -czvf iscan-linux-x64.tar.gz -C release-pkg .
 
+      - name: Generate Release Notes
+        run: |
+          sha256_binary="$(sha256sum release-pkg/iscan | awk '{print $1}')"
+          sha512_binary="$(sha512sum release-pkg/iscan | awk '{print $1}')"
+          sha256_archive="$(sha256sum iscan-linux-x64.tar.gz | awk '{print $1}')"
+          sha512_archive="$(sha512sum iscan-linux-x64.tar.gz | awk '{print $1}')"
+
+          {
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              echo "Automated build from branch \`main\`."
+            else
+              echo "Release for tag \`${{ github.ref_name }}\`."
+            fi
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo "## Checksums"
+            echo
+            echo "### Binary (\`iscan\`)"
+            echo "- SHA-256: \`$sha256_binary\`"
+            echo "- SHA-512: \`$sha512_binary\`"
+            echo
+            echo "### Archive (\`iscan-linux-x64.tar.gz\`)"
+            echo "- SHA-256: \`$sha256_archive\`"
+            echo "- SHA-512: \`$sha512_archive\`"
+          } > release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          body_path: release-notes.md
           files: iscan-linux-x64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -50,8 +78,6 @@ jobs:
           tag_name: latest
           files: iscan-linux-x64.tar.gz
           name: Latest Build
-          body: |
-            Automated build from branch `main`.
-            Last update: ${{ github.event.head_commit.timestamp }}
+          body_path: release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

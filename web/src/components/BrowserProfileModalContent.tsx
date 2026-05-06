@@ -5,7 +5,6 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
-  type TextareaHTMLAttributes,
 } from "react";
 
 import {
@@ -246,12 +245,24 @@ function formatBrowserVersionLabel(value: string | null): string {
   return value && value.trim().length > 0 ? value : "Unknown version";
 }
 
-function createUserAgentGroupLabel(option: RemoteBrowserUserAgentOption): string {
-  return `${option.browserFamily} · ${option.osFamily} · ${formatDeviceClassLabel(option.deviceClass)}`;
-}
-
 function sanitizeFilenameSegment(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function formatUserAgentOptionLabel(option: RemoteBrowserUserAgentOption): string {
+  return `${option.label} · ${formatBrowserVersionLabel(option.browserVersion)}`;
+}
+
+function getUserAgentPresetSelectValue(
+  draft: BrowserProfileDraft,
+  editorData: RemoteBrowserProfileEditorData | null,
+): string {
+  const option = findUserAgentOptionForDraft(draft, editorData);
+  if (option) {
+    return option.userAgent;
+  }
+
+  return draft.userAgent.trim().length === 0 ? BROWSER_DEFAULT_VIEWPORT_VALUE : CUSTOM_VIEWPORT_VALUE;
 }
 
 function describeProxySelection(
@@ -421,15 +432,6 @@ function SelectInput(props: SelectHTMLAttributes<HTMLSelectElement>) {
   );
 }
 
-function TextareaInput(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      className={`mt-2 w-full rounded-[12px] bg-black/20 px-3 py-2 text-[12px] text-white outline-none transition placeholder:text-[#5f5f69] focus:bg-black/30 ${props.className ?? ""}`.trim()}
-    />
-  );
-}
-
 function CheckboxRow({
   checked,
   description,
@@ -494,8 +496,8 @@ export default function BrowserProfileModalContent() {
   const [userAgentVersionFilter, setUserAgentVersionFilter] = useState<string>(DEFAULT_USER_AGENT_VERSION_FILTER);
   const [userAgentOsFilter, setUserAgentOsFilter] = useState<string>("all");
   const [userAgentDeviceFilter, setUserAgentDeviceFilter] = useState<UserAgentDeviceFilter>(DEFAULT_USER_AGENT_DEVICE_FILTER);
-  const [userAgentImportValue, setUserAgentImportValue] = useState<string>("");
   const [userAgentActionMessage, setUserAgentActionMessage] = useState<string | null>(null);
+  const [isUserAgentMenuOpen, setIsUserAgentMenuOpen] = useState(false);
 
   useEffect(() => {
     if (!activeBrowserProfileId) {
@@ -506,8 +508,8 @@ export default function BrowserProfileModalContent() {
       setError(null);
       setSaveMessage(null);
       setUserAgentVersionFilter(DEFAULT_USER_AGENT_VERSION_FILTER);
-      setUserAgentImportValue("");
       setUserAgentActionMessage(null);
+      setIsUserAgentMenuOpen(false);
       return;
     }
 
@@ -532,8 +534,8 @@ export default function BrowserProfileModalContent() {
         setUserAgentVersionFilter(initialUserAgentFilters.browserVersion);
         setUserAgentOsFilter(initialUserAgentFilters.osFamily);
         setUserAgentDeviceFilter(initialUserAgentFilters.deviceClass);
-        setUserAgentImportValue(result.profile.userAgent ?? "");
         setUserAgentActionMessage(null);
+        setIsUserAgentMenuOpen(false);
         setIsLoading(false);
       })
       .catch((nextError) => {
@@ -630,26 +632,6 @@ export default function BrowserProfileModalContent() {
       return true;
     });
   }, [editorData, userAgentBrowserFilter, userAgentDeviceFilter, userAgentOsFilter, userAgentVersionFilter]);
-  const groupedUserAgentOptions = useMemo(() => {
-    const groups = new Map<string, { label: string; options: RemoteBrowserUserAgentOption[] }>();
-    for (const option of filteredUserAgentOptions) {
-      const key = `${option.browserFamily}::${option.osFamily}::${option.deviceClass}`;
-      const existingGroup = groups.get(key);
-      if (existingGroup) {
-        existingGroup.options.push(option);
-        continue;
-      }
-
-      groups.set(key, {
-        label: createUserAgentGroupLabel(option),
-        options: [option],
-      });
-    }
-
-    return [...groups.entries()]
-      .map(([id, group]) => ({ id, ...group }))
-      .sort((left, right) => left.label.localeCompare(right.label));
-  }, [filteredUserAgentOptions]);
 
   if (!activeBrowserProfileId) {
     return null;
@@ -689,8 +671,8 @@ export default function BrowserProfileModalContent() {
       setUserAgentVersionFilter(initialUserAgentFilters.browserVersion);
       setUserAgentOsFilter(initialUserAgentFilters.osFamily);
       setUserAgentDeviceFilter(initialUserAgentFilters.deviceClass);
-      setUserAgentImportValue(result.profile.userAgent ?? "");
       setUserAgentActionMessage(null);
+      setIsUserAgentMenuOpen(false);
       setSaveMessage(result.profile.isRunning
         ? "Saved. Restart this browser profile to apply the new settings."
         : "Saved.");
@@ -719,7 +701,6 @@ export default function BrowserProfileModalContent() {
     const nextValue = userAgent.trim();
     const matchingOption = editorData?.userAgentOptions.find((option) => option.userAgent === nextValue) ?? null;
     setDraft((current) => current ? { ...current, userAgent: nextValue } : current);
-    setUserAgentImportValue(nextValue);
 
     if (matchingOption) {
       setUserAgentBrowserFilter(matchingOption.browserFamily);
@@ -734,38 +715,24 @@ export default function BrowserProfileModalContent() {
     }
   }
 
-  function handleImportUserAgent(): void {
-    const nextValue = userAgentImportValue.trim();
+  function handlePromptImportUserAgent(): void {
+    const nextValue = window.prompt("Paste a raw user agent string.", draft?.userAgent ?? "");
+    setIsUserAgentMenuOpen(false);
+    if (nextValue === null) {
+      return;
+    }
+
     applyUserAgentValue(nextValue);
-    setUserAgentActionMessage(nextValue.length > 0
+    setUserAgentActionMessage(nextValue.trim().length > 0
       ? "Imported the user agent string into this profile draft."
       : "Cleared the override. This profile will use the browser default user agent.");
-  }
-
-  async function handleCopyUserAgent(): Promise<void> {
-    const currentUserAgent = draft?.userAgent.trim() ?? "";
-    if (currentUserAgent.length === 0) {
-      setUserAgentActionMessage("Nothing to export yet. Pick a preset or import a user agent string first.");
-      return;
-    }
-
-    if (!navigator.clipboard?.writeText) {
-      setUserAgentActionMessage("Clipboard export is unavailable in this browser context. Use the download action instead.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(currentUserAgent);
-      setUserAgentActionMessage("Copied the current user agent to the clipboard.");
-    } catch (nextError) {
-      setUserAgentActionMessage(nextError instanceof Error ? nextError.message : "Clipboard export failed.");
-    }
   }
 
   function handleDownloadUserAgent(): void {
     const currentUserAgent = draft?.userAgent.trim() ?? "";
     if (currentUserAgent.length === 0) {
       setUserAgentActionMessage("Nothing to export yet. Pick a preset or import a user agent string first.");
+      setIsUserAgentMenuOpen(false);
       return;
     }
 
@@ -779,6 +746,7 @@ export default function BrowserProfileModalContent() {
     link.click();
     link.remove();
     URL.revokeObjectURL(objectUrl);
+    setIsUserAgentMenuOpen(false);
     setUserAgentActionMessage("Downloaded the current user agent as a text file.");
   }
 
@@ -920,8 +888,12 @@ export default function BrowserProfileModalContent() {
     }
 
     const userAgentSelection = getUserAgentSelectionSummary(draft, editorData);
+    const currentUserAgentSelectValue = getUserAgentPresetSelectValue(draft, editorData);
+    const currentUserAgentOptionVisible = currentUserAgentOption
+      ? filteredUserAgentOptions.some((option) => option.userAgent === currentUserAgentOption.userAgent)
+      : false;
     return (
-      <Panel title="User Agent" description="Grouped preset picker with browser version controls plus direct import and export for custom strings.">
+      <Panel title="User Agent">
         <div className="grid gap-3 md:grid-cols-4">
           <div>
             <FieldLabel label="Browser" />
@@ -951,7 +923,38 @@ export default function BrowserProfileModalContent() {
             </SelectInput>
           </div>
           <div>
-            <FieldLabel label="Device Class" />
+            <div className="flex items-center justify-between gap-2">
+              <FieldLabel label="Device Class" />
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  aria-expanded={isUserAgentMenuOpen}
+                  aria-label="User agent actions"
+                  onClick={() => setIsUserAgentMenuOpen((current) => !current)}
+                  className="rounded-[10px] bg-white/[0.05] px-2.5 py-1 text-[14px] leading-none text-[#d3d3d9] transition hover:bg-white/[0.1] hover:text-white"
+                >
+                  ...
+                </button>
+                {isUserAgentMenuOpen ? (
+                  <div className="absolute right-0 top-full z-10 mt-2 min-w-[200px] rounded-[12px] border border-white/10 bg-[#121216] p-1 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+                    <button
+                      type="button"
+                      onClick={handlePromptImportUserAgent}
+                      className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
+                    >
+                      Import From Prompt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadUserAgent}
+                      className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
+                    >
+                      Download Current UA
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
             <SelectInput value={userAgentDeviceFilter} onChange={(event) => setUserAgentDeviceFilter(event.target.value as UserAgentDeviceFilter)}>
               <option value="all">All devices</option>
               <option value="desktop">Desktop</option>
@@ -967,95 +970,49 @@ export default function BrowserProfileModalContent() {
           <p className="mt-2 truncate text-[10px] text-[#73737d]">{userAgentSelection.detail}</p>
         </div>
 
-        <div className="mt-3 rounded-[12px] bg-black/10 p-3">
-          <FieldLabel label="Import From String" hint="Paste a raw UA string, apply it to the draft, or revert back to the browser default." />
-          <TextareaInput
-            rows={4}
-            spellCheck={false}
-            value={userAgentImportValue}
-            placeholder="Mozilla/5.0 ..."
-            onChange={(event) => setUserAgentImportValue(event.target.value)}
-          />
-
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={handleImportUserAgent}
-              className="rounded-[12px] bg-white/[0.08] px-3 py-2 text-[11px] font-medium text-white transition hover:bg-white/[0.12]"
-            >
-              Import String
-            </button>
-            <button
-              type="button"
-              onClick={() => {
+        <div className="mt-3">
+          <FieldLabel label="Preset" hint="Use the filters above to narrow the catalog, or switch back to the browser default." />
+          <SelectInput
+            value={currentUserAgentSelectValue}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              if (nextValue === BROWSER_DEFAULT_VIEWPORT_VALUE) {
                 applyUserAgentValue("");
                 setUserAgentActionMessage("Reverted to the browser default user agent.");
-              }}
-              className="rounded-[12px] bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-[#d8d8dd] transition hover:bg-white/[0.08] hover:text-white"
-            >
-              Use Browser Default
-            </button>
-            <button
-              type="button"
-              onClick={() => { void handleCopyUserAgent(); }}
-              disabled={draft.userAgent.trim().length === 0}
-              className="rounded-[12px] bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-[#d8d8dd] transition hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Copy Current UA
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadUserAgent}
-              disabled={draft.userAgent.trim().length === 0}
-              className="rounded-[12px] bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-[#d8d8dd] transition hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Download .txt
-            </button>
-          </div>
+                return;
+              }
+
+              if (nextValue === CUSTOM_VIEWPORT_VALUE) {
+                return;
+              }
+
+              applyUserAgentValue(nextValue);
+              const selectedOption = editorData?.userAgentOptions.find((option) => option.userAgent === nextValue) ?? null;
+              setUserAgentActionMessage(selectedOption ? `Selected ${selectedOption.label}.` : null);
+            }}
+          >
+            <option value={BROWSER_DEFAULT_VIEWPORT_VALUE}>Browser default</option>
+            {draft.userAgent.trim().length > 0 && !currentUserAgentOption ? (
+              <option value={CUSTOM_VIEWPORT_VALUE}>Keep current custom user agent</option>
+            ) : null}
+            {currentUserAgentOption && !currentUserAgentOptionVisible ? (
+              <option value={currentUserAgentOption.userAgent}>Keep current preset ({currentUserAgentOption.label})</option>
+            ) : null}
+            {filteredUserAgentOptions.map((option) => (
+              <option key={option.userAgent} value={option.userAgent}>
+                {formatUserAgentOptionLabel(option)}
+              </option>
+            ))}
+          </SelectInput>
 
           {userAgentActionMessage ? (
             <p className="mt-3 text-[11px] leading-relaxed text-[#9e9ea7]">{userAgentActionMessage}</p>
           ) : (
-            <p className="mt-3 text-[11px] leading-relaxed text-[#7d7d87]">Paste a raw UA string when you want to override the preset catalog manually.</p>
-          )}
-        </div>
-
-        <div className="mt-3 max-h-[30vh] space-y-2 overflow-auto pr-1">
-          {groupedUserAgentOptions.length > 0 ? (
-            groupedUserAgentOptions.map((group) => (
-              <section key={group.id} className="rounded-[12px] bg-black/10 p-2">
-                <p className="px-1 text-[10px] uppercase tracking-[0.16em] text-[#6f6f79]">{group.label}</p>
-                <div className="mt-2 space-y-1">
-                  {group.options.map((option) => {
-                    const active = currentUserAgentOption?.userAgent === option.userAgent;
-                    return (
-                      <button
-                        key={option.userAgent}
-                        type="button"
-                        onClick={() => {
-                          applyUserAgentValue(option.userAgent);
-                          setUserAgentActionMessage(`Selected ${option.label}.`);
-                        }}
-                        className={`w-full rounded-[12px] px-3 py-2 text-left transition ${active ? "bg-white/[0.1] text-white" : "bg-black/20 text-[#d6d6db] hover:bg-black/25"}`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="text-[11px] font-medium">{option.label}</p>
-                          <span className="rounded-full bg-black/20 px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#94949d]">
-                            {formatBrowserVersionLabel(option.browserVersion)}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-[10px] text-[#75757f]">{option.browserFamily} · {option.osFamily} · {formatDeviceClassLabel(option.deviceClass)}</p>
-                        <p className="mt-1 truncate text-[10px] text-[#666670]">{option.userAgent}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            ))
-          ) : (
-            <div className="rounded-[12px] bg-black/10 px-3 py-2 text-[11px] text-[#7d7d87]">
-              No presets match the current browser, version, operating system, and device filters.
-            </div>
+            <p className="mt-3 text-[11px] leading-relaxed text-[#7d7d87]">
+              {filteredUserAgentOptions.length > 0
+                ? "Pick a filtered preset or open the menu for manual import and export actions."
+                : "No presets match the current filter combination. Broaden the filters or import a custom user agent from the menu."}
+            </p>
           )}
         </div>
       </Panel>

@@ -5,25 +5,17 @@ import { buildWebAssets } from "../src/web/build";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const distRoot = resolve(projectRoot, "dist");
-const binaryPath = resolve(distRoot, "iscan");
-const compileTarget = process.env.BUN_COMPILE_TARGET ?? "bun-linux-x64-baseline";
 
 const runtimeAssets = [
 	{ pathSegments: ["config.yml"], recursive: false },
+	{ pathSegments: ["package.json"], recursive: false },
+	{ pathSegments: ["bun.lock"], recursive: false },
+	{ pathSegments: ["tsconfig.json"], recursive: false },
+	{ pathSegments: ["index.ts"], recursive: false },
+	{ pathSegments: ["README.md"], recursive: false },
+	{ pathSegments: ["src"], recursive: true },
+	{ pathSegments: ["web"], recursive: true },
 ] as const;
-
-function runCheckedCommand(command: string[], failureMessage: string): void {
-	const result = Bun.spawnSync({
-		cmd: command,
-		cwd: projectRoot,
-		stdout: "inherit",
-		stderr: "inherit",
-	});
-
-	if (result.exitCode !== 0) {
-		throw new Error(`${failureMessage} Exit code: ${result.exitCode ?? "unknown"}.`);
-	}
-}
 
 async function copyRuntimeAssets(): Promise<void> {
 	for (const asset of runtimeAssets) {
@@ -40,20 +32,6 @@ await buildWebAssets({
 	outDir: resolve(distRoot, "web-build"),
 });
 
-runCheckedCommand(
-	[
-		process.execPath,
-		"build",
-		"--compile",
-		"--target",
-		compileTarget,
-		"index.ts",
-		"--outfile",
-		binaryPath,
-	],
-	"Failed to compile the Bun executable.",
-);
-
 await copyRuntimeAssets();
 
-process.stdout.write(`Built standalone bundle at ${distRoot}\n`);
+process.stdout.write(`Built source release bundle at ${distRoot}\n`);

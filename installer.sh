@@ -25,6 +25,7 @@ COMMON_PACKAGES=(
   arch-install-scripts
   base-devel
   bash
+  bun
   bubblewrap
   ca-certificates
   curl
@@ -154,6 +155,7 @@ install_packages() {
 verify_required_commands() {
   local commands=(
     bwrap
+    bun
     curl
     ffmpeg
     git
@@ -201,15 +203,29 @@ install_release_bundle() {
   fi
 
   log "Installing release files into ${INSTALL_ROOT}..."
-  run_root rm -rf "$INSTALL_ROOT/iscan" "$INSTALL_ROOT/web-build" "$INSTALL_ROOT/README.md"
+  run_root rm -rf \
+    "$INSTALL_ROOT/iscan" \
+    "$INSTALL_ROOT/index.ts" \
+    "$INSTALL_ROOT/src" \
+    "$INSTALL_ROOT/web" \
+    "$INSTALL_ROOT/web-build" \
+    "$INSTALL_ROOT/node_modules" \
+    "$INSTALL_ROOT/package.json" \
+    "$INSTALL_ROOT/bun.lock" \
+    "$INSTALL_ROOT/tsconfig.json" \
+    "$INSTALL_ROOT/README.md"
   run_root tar -xzf "$archive_path" -C "$INSTALL_ROOT"
-  run_root chmod 0755 "$INSTALL_ROOT/iscan"
 
   if [[ -f "$preserved_config_path" ]]; then
     run_root install -m 0644 "$preserved_config_path" "$INSTALL_ROOT/config.yml"
   fi
 
   run_root install -d -m 0755 "$STATE_DIR/data" "$STATE_DIR/.iscan"
+}
+
+install_runtime_dependencies() {
+  log "Installing Bun runtime dependencies into ${INSTALL_ROOT}..."
+  run_root bun install --cwd "$INSTALL_ROOT" --frozen-lockfile --production
 }
 
 write_launcher() {
@@ -221,11 +237,17 @@ write_launcher() {
 set -Eeuo pipefail
 
 install_root="${INSTALL_ROOT}"
-binary_path="${INSTALL_ROOT}/iscan"
+entrypoint_path="${INSTALL_ROOT}/index.ts"
 default_root_state_dir="${STATE_DIR}"
+bun_path="$(command -v bun 2>/dev/null || true)"
 
-if [[ ! -x "\$binary_path" ]]; then
-  printf 'iscan launcher error: %s is missing or not executable.\n' "\$binary_path" >&2
+if [[ -z "\$bun_path" || ! -x "\$bun_path" ]]; then
+  printf 'iscan launcher error: bun was not found in PATH.\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "\$entrypoint_path" ]]; then
+  printf 'iscan launcher error: %s is missing.\n' "\$entrypoint_path" >&2
   exit 1
 fi
 
@@ -240,7 +262,7 @@ fi
 mkdir -p "\$workdir" "\$workdir/data" "\$workdir/.iscan"
 cd "\$workdir"
 
-exec "\$binary_path" "\$@"
+exec "\$bun_path" "\$entrypoint_path" "\$@"
 EOF
 
   run_root install -d -m 0755 "$INSTALL_BIN_DIR"
@@ -324,6 +346,7 @@ print_summary() {
   log "iscan installation completed."
   log "  install root : ${INSTALL_ROOT}"
   log "  launcher     : ${INSTALL_BIN_DIR}/iscan"
+  log "  runtime      : bun ${INSTALL_ROOT}/index.ts"
   log "  state dir    : ${STATE_DIR}"
 
   if [[ "$INSTALL_TYPE" == "vdi" ]]; then
@@ -355,6 +378,7 @@ main() {
   verify_required_commands
   download_release_archive "$archive_path"
   install_release_bundle "$archive_path"
+  install_runtime_dependencies
   write_launcher
 
   if [[ "$INSTALL_TYPE" == "vdi" ]]; then

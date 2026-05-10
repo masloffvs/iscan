@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "bun run scripts/build-bundle.ts",
-    "build:compile": "bun build --compile --target=${BUN_COMPILE_TARGET:-bun-linux-x64-baseline} index.ts --outfile dist/iscan",
+    "build:compile": "bun run scripts/build-bundle.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "web": "bun run index.ts -- --web"
   },

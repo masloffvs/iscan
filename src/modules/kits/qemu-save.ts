@@ -2,6 +2,7 @@ import { defineExecutor, defineModule } from "../module";
 import { InvalidParamsError } from "../errors";
 import {
 	QEMU_DISK_INTERFACE_VALUES,
+	QEMU_NOTEBOOK_TYPE_OVERLAY,
 	QEMU_VM_ROLE_VALUES,
 	createQemuPresetSaveReport,
 	ensureQemuKit,
@@ -87,6 +88,7 @@ export const qemuSaveModule = defineModule<QemuSaveParams>({
 	aliases: ["kits/qemu/upsert"],
 	category: "kits",
 	description: "Create or update a saved QEMU preset for notebook-safe preset CRUD",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: QEMU_SAVE_CONSOLE_PARAMS,
 	executor: defineExecutor<QemuSaveParams>(async (context) => {
 		const kit = await ensureQemuKit(context, "Saving QEMU preset");

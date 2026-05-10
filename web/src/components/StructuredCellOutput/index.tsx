@@ -11,7 +11,7 @@ const BpkgCommandResultRenderer = React.lazy(() => import("./Renderers/BpkgComma
 const DockerCommandResultRenderer = React.lazy(() => import("./Renderers/DockerCommandResultRenderer"));
 const FallbackRenderer = React.lazy(() => import("./Renderers/FallbackRenderer"));
 
-export default function StructuredCellOutput({ value, onTableSelectionCopyTextChange }: StructuredCellOutputProps) {
+export default React.memo(function StructuredCellOutput({ value, onTableSelectionCopyTextChange }: StructuredCellOutputProps) {
   const outputEntities = normalizeOutputEntities(value);
   if (outputEntities) {
     return (
@@ -46,4 +46,4 @@ export default function StructuredCellOutput({ value, onTableSelectionCopyTextCh
       <FallbackRenderer value={value} />
     </Suspense>
   );
-}
+});

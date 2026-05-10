@@ -1,10 +1,27 @@
-import { AiKit, AI_PROVIDER_KINDS, type AiConnection, type AiProviderKind, formatAiConnectionLabel } from "../../kits";
+import { AiKit, AI_PROVIDER_KINDS, type AiConnection, type AiGenerateTextRequest, type AiProviderKind, type ModelMessage, formatAiConnectionLabel } from "../../kits";
 import { createTableEntity, createTextEntity, normalizeOutputEntities, renderOutputEntities, type OutputEntity } from "../../primitives";
 import { InvalidParamsError } from "../errors";
 import type { ModuleExecutionContext } from "../module";
 
 const MAX_RENDERED_OUTPUT_CHARS = 6000;
 const MAX_RENDERED_OUTPUT_LINES = 80;
+
+export type AiChatRole = "system" | "user" | "assistant";
+
+export type AiChatHistoryMessage = {
+	role: AiChatRole;
+	text: string;
+};
+
+export type AiChatReply = {
+	text: string;
+	usage?: {
+		inputTokens?: number;
+		outputTokens?: number;
+		totalTokens?: number;
+	};
+	finishReason?: string | null;
+};
 
 export async function ensureAiKit(
 	context: Pick<ModuleExecutionContext<unknown, object>, "getAiKit" | "runtime">,
@@ -116,13 +133,13 @@ export function createAiConnectionsReport(kit: AiKit, title = "$ai repository"):
 	const selectedConnection = kit.getSelectedConnection();
 	const summaryLines = [
 		title,
-		`Repository: ${kit.getRepositoryPath()}`,
+		`Repository path: ${kit.getRepositoryPath()}`,
 		`Connections: ${connections.length}`,
 		`Selected: ${selectedConnection ? formatAiConnectionLabel(selectedConnection) : "<none>"}`,
 	];
 
 	if (connections.length === 0) {
-		summaryLines.push("Create one with $.kits.ai.connect({ name: \"local\", provider: \"openai-compatible\", model: \"llama3.1\" })");
+		summaryLines.push("Create one with $.kits.ai.create({ provider: \"openai-compatible\", model: \"llama3.1\" }) or $.kits.ai.connect({ name: \"local\", provider: \"openai-compatible\", model: \"llama3.1\" })");
 		return [createTextEntity(summaryLines, { tone: "info" })];
 	}
 
@@ -145,7 +162,7 @@ export function createAiConnectionsReport(kit: AiKit, title = "$ai repository"):
 				model: connection.model,
 				baseUrl: connection.baseUrl ?? "",
 			})),
-			{ title: "Saved AI connections" },
+			{ title: "Available AI connections" },
 		),
 	];
 }
@@ -190,10 +207,68 @@ export function resolveChatConnection(kit: AiKit, target: string | undefined): A
 	}
 
 	if (connections.length === 0) {
-		throw new InvalidParamsError("$ai has no saved connections. Create one with $.kits.ai.connect({ name: \"local\", provider: \"openai-compatible\", model: \"llama3.1\" }).");
+		throw new InvalidParamsError("$ai has no available connections. Create one with $.kits.ai.create({ provider: \"openai-compatible\", model: \"llama3.1\" }) or $.kits.ai.connect({ name: \"local\", provider: \"openai-compatible\", model: \"llama3.1\" }).");
 	}
 
-	throw new InvalidParamsError("$ai has multiple saved connections. Select one with $.kits.ai.connect({ connection: \"<id>\" }).");
+	throw new InvalidParamsError("$ai has multiple available connections. Select one with $.kits.ai.select({ connection: \"<id>\" }) or $.kits.ai.connect({ connection: \"<id>\" }).");
+}
+
+function toModelMessages(messages: readonly AiChatHistoryMessage[]): ModelMessage[] {
+	return messages
+		.filter(message => message.role !== "system")
+		.map(message => ({
+			role: message.role,
+			content: message.text,
+		}));
+}
+
+export function buildAiSystemPrompt(
+	systemPrompt: string | undefined,
+	options: { enableTools?: boolean } = {},
+): string {
+	const defaultPrompt = options.enableTools === false
+		? [
+			"You are $ai inside iscan.",
+			"You are helping the operator through a multi-turn chat interface.",
+			"Stay concise, precise, and action-oriented.",
+		].join(" ")
+		: [
+			"You are $ai inside iscan.",
+			"You can inspect modules and run them with tools when needed.",
+			"Prefer list_modules and describe_module before run_module when the correct module or params are unclear.",
+			"When you use run_module, summarize the result for the operator instead of dumping raw JSON unless they ask for it.",
+		].join(" ");
+
+	return systemPrompt ? `${defaultPrompt}\n\n${systemPrompt}` : defaultPrompt;
+}
+
+export async function requestAiTextReply(options: {
+	kit: AiKit;
+	connection: string;
+	model?: string;
+	system: string | undefined;
+	history: readonly AiChatHistoryMessage[];
+	temperature: number | undefined;
+	maxOutputTokens: number | undefined;
+	tools?: AiGenerateTextRequest["tools"];
+	stopWhen?: AiGenerateTextRequest["stopWhen"];
+}): Promise<AiChatReply> {
+	const result = await options.kit.generateText({
+		connection: options.connection,
+		model: options.model,
+		system: options.system,
+		messages: toModelMessages(options.history),
+		temperature: options.temperature,
+		maxOutputTokens: options.maxOutputTokens,
+		tools: options.tools,
+		stopWhen: options.stopWhen,
+	});
+
+	return {
+		text: result.text?.trim() || "<empty response>",
+		usage: result.usage,
+		finishReason: result.finishReason ? String(result.finishReason) : null,
+	};
 }
 
 export function parseJson(fieldName: string, value: string): unknown {

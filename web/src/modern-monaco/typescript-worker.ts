@@ -1,0 +1,1 @@
+import "../../../node_modules/modern-monaco/dist/lsp/typescript/worker.mjs";

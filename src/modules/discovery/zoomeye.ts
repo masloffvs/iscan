@@ -7,6 +7,7 @@ import {
 	type ZoomEyePullParams,
 	type ZoomEyeSearchableField,
 	type ZoomEyeSelectParams,
+	ZOOMEYE_NOTEBOOK_TYPE_OVERLAY,
 	ZOOMEYE_PULL_CONSOLE_PARAMS,
 	ZOOMEYE_SELECT_CONSOLE_PARAMS,
 	executeZoomEyePull,
@@ -123,6 +124,7 @@ export const zoomEyePullModule = defineModule({
 	id: "discovery/zoomeye/pull",
 	category: "discovery",
 	description: "Reuse an authenticated CloakBrowser profile for ZoomEye, fetch paged search results, and store unique ip:port hosts in SQLite",
+	notebookTypeOverlay: ZOOMEYE_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: ZOOMEYE_PULL_CONSOLE_PARAMS,
 	executor: pullExecutor,
 }).useDefault("queryBase64");
@@ -131,6 +133,7 @@ export const zoomEyeSelectModule = defineModule({
 	id: "discovery/zoomeye/select",
 	category: "discovery",
 	description: "Search stored ZoomEye hosts in SQLite by regex pattern across one or all text fields",
+	notebookTypeOverlay: ZOOMEYE_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: ZOOMEYE_SELECT_CONSOLE_PARAMS,
 	executor: selectExecutor,
 }).useDefault("pattern");

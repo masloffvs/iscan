@@ -1,5 +1,5 @@
-import { listIsbFiles } from "../../isb";
-import { createJsonResponse, createMethodNotAllowedResponse, readJsonBody } from "../http";
+import { createIsbFolder, listIsbFiles, listIsbFolders, normalizeIsbDirectoryPath, searchIsbFiles } from "../../isb";
+import { createJsonResponse, createMethodNotAllowedResponse, ensureRecordBody, readJsonBody, VmServerHttpError } from "../http";
 import {
   readVmFileRequestBody,
   readVmMoveFileRequestBody,
@@ -20,6 +20,53 @@ export async function handleFilesRoutes(
       ok: true,
       result: {
         files: await listIsbFiles(),
+      },
+    });
+  }
+
+  if (url.pathname === "/vm/files/folders") {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    return createJsonResponse({
+      ok: true,
+      result: {
+        folders: await listIsbFolders(),
+      },
+    });
+  }
+
+  if (url.pathname === "/vm/files/folders/create") {
+    if (request.method !== "POST") {
+      return createMethodNotAllowedResponse(["POST"]);
+    }
+
+    const body = ensureRecordBody(await readJsonBody(request));
+    if (typeof body.path !== "string" || body.path.trim().length === 0) {
+      throw new VmServerHttpError(400, "Folder create request requires a non-empty `path`.");
+    }
+
+    const folder = await createIsbFolder(normalizeIsbDirectoryPath(body.path));
+    return createJsonResponse({
+      ok: true,
+      result: folder,
+    }, { status: 201 });
+  }
+
+  if (url.pathname === "/vm/files/search") {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    const query = url.searchParams.get("query") ?? "";
+    const rawLimit = Number(url.searchParams.get("limit") ?? "12");
+    const limit = Number.isFinite(rawLimit) ? rawLimit : 12;
+
+    return createJsonResponse({
+      ok: true,
+      result: {
+        entries: await searchIsbFiles(query, { limit }),
       },
     });
   }

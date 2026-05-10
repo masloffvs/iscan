@@ -1,5 +1,5 @@
 import type { ModuleDefinition } from "./module";
-import { auditViteSpaModule, auditViteSourcemapsModule } from "./audit";
+import { auditCrawlModule, auditViteSpaModule, auditViteSourcemapsModule } from "./audit";
 import { aircrackDslModule } from "./aircrack";
 import {
 	atoolDslModule,
@@ -18,7 +18,7 @@ import {
 import { ftpDslModule } from "./ftp";
 import { hwDslModule } from "./hw";
 import { nmapParseXmlModule, nmapReadXmlModule } from "./nmap";
-import { coreModulesModule, coreTaskManagerModule } from "./core";
+import { coreModulesModule, coreNoteModule, coreTaskManagerModule } from "./core";
 import {
 	dockerBuildModule,
 	dockerCdModule,
@@ -107,11 +107,12 @@ import {
 	zoomEyeSelectModule,
 } from "./discovery";
 import { gamesTicTacToeModule, gamesHangmanModule } from "./games";
-import { aiChatModule, aiConnectModule, aiListModule, axiosModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, kitsManagerModule, microlinkUaListModule, microlinkUaRefreshModule, ollamaConnectModule, qemuConnectModule, qemuDeleteModule, qemuEnvironmentModule, qemuGetModule, qemuListModule, qemuManagerModule, qemuPreviewModule, qemuSaveModule, cloakManagerModule, proxyDeleteModule, proxyImportModule, proxyListModule, proxyManagerModule, proxyReplaceModule, proxySaveModule, proxyTestModule } from "./kits";
+import { aiChatModule, aiConnectModule, aiCreateModule, aiDeleteModule, aiListModule, aiSelectModule, axiosModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, exploitDbGetModule, exploitDbListModule, exploitDbRefreshModule, exploitDbSearchModule, exploitDbStatusModule, kitsManagerModule, microlinkUaListModule, microlinkUaRefreshModule, uaListModule, uaPatternsModule, uaRefreshModule, uaSearchModule, uaSourcesModule, ollamaConnectModule, portScanGetModule, portScanListModule, portScanPolicyModule, portScanScanModule, qemuConnectModule, qemuDeleteModule, qemuEnvironmentModule, qemuGetModule, qemuListModule, qemuManagerModule, qemuPreviewModule, qemuSaveModule, cloakManagerModule, proxyDeleteModule, proxyImportModule, proxyListModule, proxyManagerModule, proxyReplaceModule, proxySaveModule, proxyTestModule } from "./kits";
 import { sqlModule } from "./sql";
 
 export const registeredModules: readonly ModuleDefinition<unknown, unknown, object>[] = [
 	coreModulesModule,
+	coreNoteModule,
 	coreTaskManagerModule,
 	bpkgListModule,
 	bpkgPackagesModule,
@@ -200,6 +201,7 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	dockerComposePsModule,
 	dockerComposeRestartModule,
 	dockerComposeLogsModule,
+	auditCrawlModule,
 	auditViteSpaModule,
 	auditViteSourcemapsModule,
 	apacheFilesModule,
@@ -212,6 +214,9 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	gamesHangmanModule,
 	kitsManagerModule,
 	aiConnectModule,
+	aiCreateModule,
+	aiSelectModule,
+	aiDeleteModule,
 	aiListModule,
 	aiChatModule,
 	cloakManagerModule,
@@ -220,6 +225,16 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	proxyListModule,
 	microlinkUaListModule,
 	microlinkUaRefreshModule,
+	exploitDbStatusModule,
+	exploitDbGetModule,
+	exploitDbListModule,
+	exploitDbSearchModule,
+	exploitDbRefreshModule,
+	uaListModule,
+	uaPatternsModule,
+	uaSearchModule,
+	uaSourcesModule,
+	uaRefreshModule,
 	proxySaveModule,
 	proxyDeleteModule,
 	proxyTestModule,
@@ -236,6 +251,10 @@ export const registeredModules: readonly ModuleDefinition<unknown, unknown, obje
 	qemuSaveModule,
 	qemuDeleteModule,
 	qemuManagerModule,
+	portScanGetModule,
+	portScanListModule,
+	portScanPolicyModule,
+	portScanScanModule,
 	discoveryHunterNowApacheIndexModule,
 	axiosModule,
 	sqlModule,

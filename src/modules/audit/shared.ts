@@ -4,13 +4,14 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import { $axios } from "../../axios";
 import { CloakKit } from "../../kits";
 import { InvalidParamsError } from "../errors";
-import type { ModuleConsoleParam, ModuleExecutionContext } from "../module";
+import { defineNotebookTypeOverlay, type ModuleConsoleParam, type ModuleExecutionContext } from "../module";
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_ASSETS = 12;
 const DEFAULT_MAX_ASSET_KB = 1024;
 const DEFAULT_BROWSER_RENDER_MS = 1000;
 const DEFAULT_MAX_PATTERN_MATCHES = 5;
+export const AUDIT_NOTEBOOK_TYPE_OVERLAY = defineNotebookTypeOverlay("src/modules/audit/audit.h.ts");
 
 export type AuditFetchMode = "http" | "browser";
 
@@ -35,6 +36,7 @@ export type AuditFindingLike = {
 	kind: string;
 	location: string;
 	evidence: string;
+	rawEvidence?: string;
 	message: string;
 };
 
@@ -336,6 +338,7 @@ export function pushAuditFinding<Finding extends AuditFindingLike>(
 		finding.kind,
 		finding.location,
 		finding.evidence,
+		finding.rawEvidence ?? "",
 		finding.message,
 	].join("\u0000");
 

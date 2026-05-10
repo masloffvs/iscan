@@ -1,8 +1,8 @@
-import { type ReactNode } from "react";
+import { type ReactNode, memo } from "react";
 import { motion } from "framer-motion";
 import { useInterfaceStore } from "../store/ui";
 
-export default function Modal({ children, title, onClose }: { children: ReactNode; title: string; onClose?: () => void }) {
+export default memo(function Modal({ children, title, onClose }: { children: ReactNode; title: string; onClose?: () => void }) {
   const closeModal = useInterfaceStore((state) => state.closeModal);
 
   const handleClose = onClose ?? closeModal;
@@ -25,7 +25,7 @@ export default function Modal({ children, title, onClose }: { children: ReactNod
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 10 }}
         transition={{ type: "spring", damping: 25, stiffness: 300, mass: 0.8 }}
-        className="relative flex max-h-[82vh] w-full max-w-[920px] flex-col overflow-hidden rounded-[16px] bg-[#171717] shadow-2xl"
+        className="relative flex max-h-[82vh] w-full max-w-[920px] flex-col overflow-hidden rounded-[16px] bg-[#121212] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between px-4 py-3">
@@ -44,4 +44,4 @@ export default function Modal({ children, title, onClose }: { children: ReactNod
       </motion.div>
     </div>
   );
-}
+});

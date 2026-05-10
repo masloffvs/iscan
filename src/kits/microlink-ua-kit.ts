@@ -1,13 +1,12 @@
-import type { AxiosError } from "axios";
-
-import { $axios } from "../axios";
-
+import { $config, type ResolvedUaServiceConfig, type ResolvedUaSourceConfig } from "../config";
 import { Kit, type KitInfo } from "./kit";
 import {
 	$storageKit,
 	type MicrolinkUaSnapshotRow,
 	type MicrolinkUaSnapshotStatus as PersistedMicrolinkUaSnapshotStatus,
+	type UaSourceRow,
 } from "./storage-kit";
+import { UA_MICROLINK_SOURCE_ID, UaKit } from "./ua-kit";
 
 export const MICROLINK_UA_KIT_ID = "microlink-ua";
 
@@ -53,18 +52,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeStringList(value: unknown): string[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-
+function normalizeStringList(value: readonly string[]): string[] {
 	const items: string[] = [];
 	const seen = new Set<string>();
- for (const entry of value) {
-		if (typeof entry !== "string") {
-			continue;
-		}
-
+	for (const entry of value) {
 		const normalized = entry.trim();
 		if (normalized.length === 0 || seen.has(normalized)) {
 			continue;
@@ -85,54 +76,67 @@ function normalizeUpdatedAt(value: unknown): number | null {
 	return Math.trunc(value);
 }
 
-function normalizeMicrolinkUaPayload(value: unknown): MicrolinkUaPayload {
-	if (!isRecord(value)) {
-		throw new Error("Microlink UA payload must be an object.");
-	}
-
+function resolveMicrolinkSource(serviceConfig: ResolvedUaServiceConfig, sourceUrlOverride?: string): ResolvedUaSourceConfig {
+	const configuredSource = serviceConfig.sources.find((source) => source.id === UA_MICROLINK_SOURCE_ID);
 	return {
-		ai: normalizeStringList(value.ai),
-		crawler: normalizeStringList(value.crawler),
-		updatedAt: normalizeUpdatedAt(value.updatedAt),
-		user: normalizeStringList(value.user),
+		categories: configuredSource?.categories.length ? [...configuredSource.categories] : ["user", "crawler", "ai"],
+		enabled: true,
+		id: configuredSource?.id ?? UA_MICROLINK_SOURCE_ID,
+		kind: configuredSource?.kind ?? "microlink-json",
+		recordKinds: configuredSource?.recordKinds.includes("exact")
+			? [...configuredSource.recordKinds]
+			: ["exact"],
+		url: sourceUrlOverride?.trim() || configuredSource?.url || MICROLINK_UA_SOURCE_URL,
 	};
 }
 
-function parseMicrolinkUaPayload(payloadJson: string | null): MicrolinkUaPayload | null {
-	if (!payloadJson) {
+function createMicrolinkCompatConfig(
+	serviceConfig: ResolvedUaServiceConfig,
+	sourceUrlOverride: string | undefined,
+	staleAfterMs: number,
+): ResolvedUaServiceConfig {
+	return {
+		refreshIntervalMs: serviceConfig.refreshIntervalMs,
+		refreshOnEmpty: serviceConfig.refreshOnEmpty,
+		sources: [resolveMicrolinkSource(serviceConfig, sourceUrlOverride)],
+		staleAfterMs,
+	};
+}
+
+function parseUpdatedAtFromMetadata(metadataJson: string | null): number | null {
+	if (!metadataJson) {
 		return null;
 	}
 
 	try {
-		return normalizeMicrolinkUaPayload(JSON.parse(payloadJson));
+		const parsed = JSON.parse(metadataJson);
+		if (!isRecord(parsed)) {
+			return null;
+		}
+
+		return normalizeUpdatedAt(parsed.updatedAt);
 	} catch {
 		return null;
 	}
-}
-
-function formatRequestError(error: unknown): string {
-	if (isRecord(error) && typeof error.message === "string") {
-		return error.message;
-	}
-
-	const axiosError = error as AxiosError | undefined;
-	if (axiosError?.response?.status) {
-		return `Microlink request failed with status ${axiosError.response.status}.`;
-	}
-
-	return String(error);
 }
 
 export class MicrolinkUaKit extends Kit {
 	private readonly requestTimeoutMs: number;
 	private readonly sourceUrl: string;
 	private readonly staleAfterMs: number;
+	private readonly uaKit: UaKit;
 
 	constructor(options: MicrolinkUaKitOptions = {}) {
 		super(MICROLINK_UA_KIT_INFO);
+		const serviceConfig = $config.services.ua;
+		const resolvedSource = resolveMicrolinkSource(serviceConfig, options.sourceUrl);
 		this.requestTimeoutMs = options.requestTimeoutMs ?? MICROLINK_UA_REQUEST_TIMEOUT_MS;
-		this.sourceUrl = options.sourceUrl?.trim() || MICROLINK_UA_SOURCE_URL;
-		this.staleAfterMs = options.staleAfterMs ?? MICROLINK_UA_STALE_AFTER_MS;
+		this.sourceUrl = resolvedSource.url;
+		this.staleAfterMs = options.staleAfterMs ?? serviceConfig.staleAfterMs ?? MICROLINK_UA_STALE_AFTER_MS;
+		this.uaKit = new UaKit({
+			config: createMicrolinkCompatConfig(serviceConfig, this.sourceUrl, this.staleAfterMs),
+			requestTimeoutMs: this.requestTimeoutMs,
+		});
 	}
 
 	getSourceUrl(): string {
@@ -143,12 +147,45 @@ export class MicrolinkUaKit extends Kit {
 		return this.staleAfterMs;
 	}
 
+	private getCachedSourceRow(): UaSourceRow | null {
+		return $storageKit.selectUaSources().find((row) => row.source_id === UA_MICROLINK_SOURCE_ID) ?? null;
+	}
+
 	getCachedSnapshot(): MicrolinkUaSnapshotRow | null {
-		return $storageKit.selectMicrolinkUaSnapshot();
+		const sourceRow = this.getCachedSourceRow();
+		if (!sourceRow?.fetch_status || !sourceRow.fetched_at) {
+			return null;
+		}
+
+		const payload = this.getCachedPayload();
+		return {
+			error_message: sourceRow.error_message,
+			fetch_status: sourceRow.fetch_status,
+			fetched_at: sourceRow.fetched_at,
+			microlink_updated_at: parseUpdatedAtFromMetadata(sourceRow.metadata_json),
+			payload_json: payload ? JSON.stringify(payload) : null,
+			snapshot_key: UA_MICROLINK_SOURCE_ID,
+			source_url: sourceRow.source_url,
+		};
 	}
 
 	getCachedPayload(): MicrolinkUaPayload | null {
-		return parseMicrolinkUaPayload(this.getCachedSnapshot()?.payload_json ?? null);
+		const sourceRow = this.getCachedSourceRow();
+		const exactAgentRows = $storageKit.selectUaExactAgents().filter((row) => row.source_id === UA_MICROLINK_SOURCE_ID);
+		if (!sourceRow && exactAgentRows.length === 0) {
+			return null;
+		}
+
+		const payload = {
+			ai: normalizeStringList(exactAgentRows.filter((row) => row.category === "ai").map((row) => row.user_agent)),
+			crawler: normalizeStringList(exactAgentRows.filter((row) => row.category === "crawler").map((row) => row.user_agent)),
+			updatedAt: parseUpdatedAtFromMetadata(sourceRow?.metadata_json ?? null),
+			user: normalizeStringList(exactAgentRows.filter((row) => row.category === "user").map((row) => row.user_agent)),
+		};
+
+		return payload.ai.length > 0 || payload.crawler.length > 0 || payload.user.length > 0
+			? payload
+			: null;
 	}
 
 	async listUserAgents(): Promise<string[]> {
@@ -166,40 +203,13 @@ export class MicrolinkUaKit extends Kit {
 	}
 
 	async refresh(): Promise<MicrolinkUaStatus> {
-		const currentSnapshot = this.getCachedSnapshot();
-		const currentPayload = parseMicrolinkUaPayload(currentSnapshot?.payload_json ?? null);
-		const fetchedAt = new Date().toISOString();
-
-		try {
-			const response = await $axios.get(this.sourceUrl, {
-				timeout: this.requestTimeoutMs,
-			});
-			const payload = normalizeMicrolinkUaPayload(response.data);
-			$storageKit.upsertMicrolinkUaSnapshot({
-				errorMessage: null,
-				fetchStatus: "success",
-				fetchedAt,
-				microlinkUpdatedAt: payload.updatedAt,
-				payloadJson: JSON.stringify(payload),
-				sourceUrl: this.sourceUrl,
-			});
-		} catch (error) {
-			$storageKit.upsertMicrolinkUaSnapshot({
-				errorMessage: formatRequestError(error),
-				fetchStatus: "error",
-				fetchedAt,
-				microlinkUpdatedAt: currentPayload?.updatedAt ?? currentSnapshot?.microlink_updated_at ?? null,
-				payloadJson: currentSnapshot?.payload_json ?? null,
-				sourceUrl: this.sourceUrl,
-			});
-		}
-
+		await this.uaKit.refresh([UA_MICROLINK_SOURCE_ID]);
 		return await this.getStatus();
 	}
 
 	async getStatus(): Promise<MicrolinkUaStatus> {
 		const snapshot = this.getCachedSnapshot();
-		const payload = parseMicrolinkUaPayload(snapshot?.payload_json ?? null);
+		const payload = this.getCachedPayload();
 		const fetchedAt = snapshot?.fetched_at ?? null;
 		const isStale = fetchedAt
 			? (Date.now() - Date.parse(fetchedAt)) > this.staleAfterMs

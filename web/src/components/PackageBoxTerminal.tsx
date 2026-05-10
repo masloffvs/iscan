@@ -38,7 +38,7 @@ const DEFAULT_TERMINAL_GEOMETRY: TerminalGeometry = {
   rows: 28,
 };
 
-const MODAL_BACKGROUND = "#171717";
+const MODAL_BACKGROUND = "#121212";
 const CELL_WIDTH_PX = 9;
 const CELL_HEIGHT_PX = 20;
 const TERMINAL_VERTICAL_PADDING_PX = 18;
@@ -386,7 +386,7 @@ export default function PackageBoxTerminal({ boxId }: PackageBoxTerminalProps) {
   }, [boxId, sessionRevision]);
 
   const containerClassName = isFullscreen
-    ? "fixed inset-0 z-[130] flex flex-col bg-[#171717] p-4"
+    ? "fixed inset-0 z-[130] flex flex-col bg-[#121212] p-4"
     : "space-y-2";
   const panelClassName = isFullscreen ? "flex min-h-0 grow flex-col" : "";
   const hostClassName = isFullscreen

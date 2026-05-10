@@ -3,6 +3,7 @@ import {
 	createProxyTestReport,
 	ensureProxyKit,
 	parseOptionalString,
+	PROXY_NOTEBOOK_TYPE_OVERLAY,
 	resolveProxyProfile,
 } from "./proxy-shared";
 
@@ -14,6 +15,7 @@ export const proxyTestModule = defineModule<ProxyTestParams>({
 	id: "kits/proxy/test",
 	category: "kits",
 	description: "Test a saved proxy profile and report latency or connection errors",
+	notebookTypeOverlay: PROXY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: [
 		{
 			name: "proxy",

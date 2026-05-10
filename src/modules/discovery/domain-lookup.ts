@@ -8,6 +8,7 @@ import {
 	
 import { createTableEntity, createTextEntity, type OutputEntity } from "../../primitives";
 import { defineExecutor, defineModule, type ModuleConsoleParam } from "../module";
+import { DISCOVERY_NOTEBOOK_TYPE_OVERLAY } from "./notebook-overlay";
 import { executeDomainLookup } from "./domain-lookup.shared";
 import type { DomainLookupParams } from "./domain-lookup.shared";
 
@@ -236,6 +237,7 @@ export const domainLookupModule = defineModule({
 	id: "discovery/domain-lookup",
 	category: "discovery",
 	description: "Collect DNS, reverse DNS, and RDAP information for a domain",
+	notebookTypeOverlay: DISCOVERY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: DOMAIN_LOOKUP_CONSOLE_PARAMS,
 	executor: domainLookupExecutor,
 }).useDefault("domain");

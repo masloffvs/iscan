@@ -38,3 +38,7 @@ data
 dist
 .tmp-web-check
 *.log
+.codex
+.vscode
+.specify
+.tmp

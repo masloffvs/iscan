@@ -9,6 +9,7 @@ import { FilePicker } from "ink-file-picker";
 
 import { QemuKit, type QemuDiskInterface, type QemuKitEnvironmentReport, type QemuRouterNetworkConfig, type QemuVmPreset } from "../../kits";
 import { defineExecutor, defineModule, type InteractiveApplicationProps } from "../module";
+import { QEMU_NOTEBOOK_TYPE_OVERLAY } from "./qemu-shared";
 
 type QemuManagerProps = InteractiveApplicationProps & {
 	kit: QemuKit;
@@ -2378,6 +2379,7 @@ export const qemuManagerModule = defineModule({
 	id: "kits/qemu/manager",
 	category: "kits",
 	description: "Create systems from templates, manage saved QEMU VM presets, create images, and launch VMs via QemuKit",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	executor: defineExecutor(async (context) => {
 		let kit = context.getQemuKit();
 		if (!kit) {

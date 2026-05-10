@@ -1,6 +1,7 @@
 import { QemuKit } from "../../kits";
 import { createTextEntity } from "../../primitives";
 import { defineExecutor, defineModule, type ModuleConsoleParam } from "../module";
+import { QEMU_NOTEBOOK_TYPE_OVERLAY } from "./qemu-shared";
 
 export type QemuConnectParams = {
 	architecture?: string;
@@ -156,6 +157,7 @@ export const qemuConnectModule = defineModule({
 	id: "kits/qemu/connect",
 	category: "kits",
 	description: "Connect an Activity-scoped QemuKit using manifest-managed external dependencies",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: QEMU_CONNECT_CONSOLE_PARAMS,
 	executor,
 });

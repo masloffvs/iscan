@@ -1210,6 +1210,7 @@ function createGeneratedPackageBindingModule(
 		id: `pkg/${packageId}/${bindingId}`,
 		category: "pkg",
 		description: `${bindingDefinition.description} Uses the selected default bpkg box.`,
+		notebookTypeOverlay: bindingDefinition.notebookTypeOverlay,
 		consoleParams: createBpkgBindingConsoleParams(packageDefinition, bindingId),
 		executor: defineExecutor(async (context) => {
 			const kit = await ensureBpkgKit(context, `module:pkg/${packageId}/${bindingId}`);

@@ -101,11 +101,8 @@ export async function handlePackageRoutes(
 
     const body = readVmPackagePrivilegeRequestBody(await readJsonBody(request));
     const kit = await ensureBpkgKit();
-    const box = await kit.setBoxPrivilege(body.target, {
-      allowedPrivilegeLevels: body.allowedPrivilegeLevels,
-      defaultPrivilegeLevel: body.defaultPrivilegeLevel,
-      sandboxPolicyExtensions: body.sandboxPolicyExtensions,
-    });
+    const { target, ...policy } = body;
+    const box = await kit.setBoxPrivilege(target, policy);
 
     return createJsonResponse({ ok: true, result: { target: box.id, box } });
   }

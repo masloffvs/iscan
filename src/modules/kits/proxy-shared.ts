@@ -7,7 +7,7 @@ import {
 	type PrimitiveTableRow,
 } from "../../primitives";
 import { InvalidParamsError } from "../errors";
-import type { ModuleExecutionContext } from "../module";
+import { defineNotebookTypeOverlay, type ModuleExecutionContext } from "../module";
 
 type EnsureProxyKitContext = Pick<ModuleExecutionContext<unknown, object>, "getProxyKit" | "runtime">;
 
@@ -17,6 +17,8 @@ type ProxyProfilesReportOptions = {
 	emptyMessage?: string;
 	tableTitle?: string;
 };
+
+export const PROXY_NOTEBOOK_TYPE_OVERLAY = defineNotebookTypeOverlay("src/modules/kits/proxy.h.ts");
 
 export const PROXY_TYPE_VALUES: readonly ProxyType[] = [
 	"HTTP",

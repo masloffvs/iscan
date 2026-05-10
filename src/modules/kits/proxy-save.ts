@@ -2,6 +2,7 @@ import { defineExecutor, defineModule } from "../module";
 import { InvalidParamsError } from "../errors";
 import {
 	PROXY_TYPE_VALUES,
+	PROXY_NOTEBOOK_TYPE_OVERLAY,
 	createProxySaveReport,
 	ensureProxyKit,
 	ensureUniqueProxyName,
@@ -106,6 +107,7 @@ export const proxySaveModule = defineModule<ProxySaveParams>({
 	aliases: ["kits/proxy/upsert"],
 	category: "kits",
 	description: "Create or update a saved proxy profile for notebook-safe proxy CRUD",
+	notebookTypeOverlay: PROXY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: PROXY_SAVE_CONSOLE_PARAMS,
 	executor: defineExecutor<ProxySaveParams>(async (context) => {
 		const kit = await ensureProxyKit(context, "Saving Proxy profile");

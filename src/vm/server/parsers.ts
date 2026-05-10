@@ -11,18 +11,22 @@ import { VmServerHttpError, buildErrorMessage, ensureRecordBody } from "./http";
 import { decodeSocketMessage } from "./utils";
 import type {
   VmBrowserActionRequestBody,
+  VmBrowserStreamClientMessage,
   VmBrowserGestureRequestBody,
   VmBrowserKeyboardRequestBody,
   VmBrowserProfileUpdateRequestBody,
   VmBrowserTabActivationRequestBody,
+  VmBrowserTextRequestBody,
   VmBrowserWheelRequestBody,
   VmCellLanguage,
   VmCompletionRequestBody,
   VmEvalRequestBody,
+  VmExecutionStreamClientMessage,
   VmFileRequestBody,
   VmFsDeleteRequestBody,
   VmFsWriteRequestBody,
   VmInitRequestBody,
+  VmInspectorStreamClientMessage,
   VmMoveFileRequestBody,
   VmPackageActionRequestBody,
   VmPackageCreateRequestBody,
@@ -221,6 +225,18 @@ export function readOptionalVmSandboxPolicyExtensions(
   }
 }
 
+function readOptionalVmPolicyBoolean(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new VmServerHttpError(400, `\`${fieldName}\` must be a boolean.`);
+  }
+
+  return value;
+}
+
 // ─── Request bodies ───────────────────────────────────────────────────────────
 
 export function readVmInitRequestBody(value: unknown): VmInitRequestBody {
@@ -243,6 +259,8 @@ export function readVmEvalRequestBody(value: unknown): VmEvalRequestBody {
   return {
     code: payload.code,
     language: normalizeVmCellLanguage(payload.language),
+    cellId: normalizeOptionalTrimmedString(payload.cellId, "Eval request field `cellId`"),
+    previousCellId: normalizeOptionalTrimmedString(payload.previousCellId, "Eval request field `previousCellId`"),
   };
 }
 
@@ -373,6 +391,107 @@ export function readVmBrowserNavigateRequestBody(value: unknown): VmBrowserActio
   return payload;
 }
 
+export function readVmExecutionStreamClientMessage(
+  message: string | Buffer | ArrayBuffer | Uint8Array,
+): VmExecutionStreamClientMessage {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(decodeSocketMessage(message)) as unknown;
+  } catch (error) {
+    throw new VmServerHttpError(400, "Execution stream message must be valid JSON.", error);
+  }
+
+  const payload = ensureRecordBody(parsed);
+  if (payload.type === "execute") {
+    if (typeof payload.input !== "string" || payload.input.trim().length === 0) {
+      throw new VmServerHttpError(400, "Execution message `input` must be a non-empty string.");
+    }
+
+    return {
+      type: "execute",
+      code: normalizeVmCode(payload.code),
+      input: payload.input,
+      language: normalizeVmCellLanguage(payload.language),
+      cellId: normalizeOptionalTrimmedString(payload.cellId, "Execution message field `cellId`"),
+      previousCellId: normalizeOptionalTrimmedString(payload.previousCellId, "Execution message field `previousCellId`"),
+    };
+  }
+
+  if (payload.type === "cancel") {
+    return {
+      type: "cancel",
+      taskId: normalizeOptionalTrimmedString(payload.taskId, "Execution message field `taskId`"),
+    };
+  }
+
+  throw new VmServerHttpError(400, "Execution stream message type must be either `execute` or `cancel`.");
+}
+
+export function readVmBrowserStreamClientMessage(
+  message: string | Buffer | ArrayBuffer | Uint8Array,
+): VmBrowserStreamClientMessage {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(decodeSocketMessage(message)) as unknown;
+  } catch (error) {
+    throw new VmServerHttpError(400, "Browser stream message must be valid JSON.", error);
+  }
+
+  const payload = ensureRecordBody(parsed);
+  if (payload.type === "refresh-tabs") {
+    return { type: "refresh-tabs" };
+  }
+
+  if ((payload.type === "pointer-down" || payload.type === "pointer-move" || payload.type === "pointer-up")
+    && typeof payload.x === "number" && Number.isFinite(payload.x)
+    && typeof payload.y === "number" && Number.isFinite(payload.y)) {
+    return {
+      type: payload.type,
+      x: payload.x,
+      y: payload.y,
+    };
+  }
+
+  throw new VmServerHttpError(400, `Unsupported browser stream message type: ${String(payload.type)}`);
+}
+
+export function readVmInspectorStreamClientMessage(
+  message: string | Buffer | ArrayBuffer | Uint8Array,
+): VmInspectorStreamClientMessage {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(decodeSocketMessage(message)) as unknown;
+  } catch (error) {
+    throw new VmServerHttpError(400, "Inspector stream message must be valid JSON.", error);
+  }
+
+  const payload = ensureRecordBody(parsed);
+  if (payload.type === "inspect-node") {
+    return {
+      type: "inspect-node",
+      handle: normalizeOptionalTrimmedString(payload.handle, "Inspector stream field `handle`")
+        ?? (() => {
+          throw new VmServerHttpError(400, "Inspector stream message `handle` must be a non-empty string.");
+        })(),
+    };
+  }
+
+  if (payload.type === "cancel-task") {
+    return {
+      type: "cancel-task",
+      taskId: normalizeOptionalTrimmedString(payload.taskId, "Inspector stream field `taskId`")
+        ?? (() => {
+          throw new VmServerHttpError(400, "Inspector stream message `taskId` must be a non-empty string.");
+        })(),
+    };
+  }
+
+  throw new VmServerHttpError(400, "Inspector stream message type must be either `inspect-node` or `cancel-task`.");
+}
+
 export function readVmBrowserClickRequestBody(
   value: unknown,
 ): Required<Pick<VmBrowserActionRequestBody, "target" | "x" | "y">> {
@@ -492,6 +611,26 @@ export function readVmBrowserKeyboardRequestBody(value: unknown): VmBrowserKeybo
   };
 }
 
+export function readVmBrowserTextRequestBody(value: unknown): VmBrowserTextRequestBody {
+  if (!value || typeof value !== "object") {
+    throw new VmServerHttpError(400, "Browser text request body must be an object.");
+  }
+
+  const payload = value as Partial<VmBrowserTextRequestBody>;
+  if (typeof payload.target !== "string" || payload.target.trim().length === 0) {
+    throw new VmServerHttpError(400, "Browser text request requires a non-empty `target`.");
+  }
+
+  if (typeof payload.text !== "string") {
+    throw new VmServerHttpError(400, "Browser text request requires a string `text`.");
+  }
+
+  return {
+    target: payload.target,
+    text: payload.text,
+  };
+}
+
 export function readVmBrowserTabActivationRequestBody(value: unknown): VmBrowserTabActivationRequestBody {
   if (!value || typeof value !== "object") {
     throw new VmServerHttpError(400, "Browser tab activation request body must be an object.");
@@ -586,6 +725,18 @@ export function readVmPackageCreateRequestBody(value: unknown): VmPackageCreateR
     payload.sandboxPolicyExtensions,
     "sandboxPolicyExtensions",
   );
+  const allowHostPrivileged = readOptionalVmPolicyBoolean(payload.allowHostPrivileged, "allowHostPrivileged");
+  const allowSandboxRw = readOptionalVmPolicyBoolean(payload.allowSandboxRw, "allowSandboxRw");
+  const defaultSandboxRw = readOptionalVmPolicyBoolean(payload.defaultSandboxRw, "defaultSandboxRw");
+  const hostDev = readOptionalVmPolicyBoolean(payload.hostDev, "hostDev");
+  const hostProc = readOptionalVmPolicyBoolean(payload.hostProc, "hostProc");
+  const hostSys = readOptionalVmPolicyBoolean(payload.hostSys, "hostSys");
+  const shareNetwork = readOptionalVmPolicyBoolean(payload.shareNetwork, "shareNetwork");
+  const unshareUser = readOptionalVmPolicyBoolean(payload.unshareUser, "unshareUser");
+  const unshareIpc = readOptionalVmPolicyBoolean(payload.unshareIpc, "unshareIpc");
+  const unsharePid = readOptionalVmPolicyBoolean(payload.unsharePid, "unsharePid");
+  const unshareUts = readOptionalVmPolicyBoolean(payload.unshareUts, "unshareUts");
+  const unshareCgroup = readOptionalVmPolicyBoolean(payload.unshareCgroup, "unshareCgroup");
 
   return {
     id: payload.id.trim(),
@@ -593,9 +744,21 @@ export function readVmPackageCreateRequestBody(value: unknown): VmPackageCreateR
     description: typeof payload.description === "string" && payload.description.trim().length > 0
       ? payload.description.trim()
       : undefined,
+    ...(allowHostPrivileged !== undefined ? { allowHostPrivileged } : {}),
+    ...(allowSandboxRw !== undefined ? { allowSandboxRw } : {}),
     allowedPrivilegeLevels,
+    ...(defaultSandboxRw !== undefined ? { defaultSandboxRw } : {}),
     defaultPrivilegeLevel,
+    ...(hostDev !== undefined ? { hostDev } : {}),
+    ...(hostProc !== undefined ? { hostProc } : {}),
+    ...(hostSys !== undefined ? { hostSys } : {}),
     packages,
+    ...(shareNetwork !== undefined ? { shareNetwork } : {}),
+    ...(unshareUser !== undefined ? { unshareUser } : {}),
+    ...(unshareIpc !== undefined ? { unshareIpc } : {}),
+    ...(unsharePid !== undefined ? { unsharePid } : {}),
+    ...(unshareUts !== undefined ? { unshareUts } : {}),
+    ...(unshareCgroup !== undefined ? { unshareCgroup } : {}),
     sandboxPolicyExtensions,
   };
 }
@@ -656,22 +819,62 @@ export function readVmPackagePrivilegeRequestBody(value: unknown): VmPackagePriv
     payload.sandboxPolicyExtensions,
     "sandboxPolicyExtensions",
   );
+  const allowHostPrivileged = readOptionalVmPolicyBoolean(payload.allowHostPrivileged, "allowHostPrivileged");
+  const allowSandboxRw = readOptionalVmPolicyBoolean(payload.allowSandboxRw, "allowSandboxRw");
+  const defaultSandboxRw = readOptionalVmPolicyBoolean(payload.defaultSandboxRw, "defaultSandboxRw");
+  const hostDev = readOptionalVmPolicyBoolean(payload.hostDev, "hostDev");
+  const hostProc = readOptionalVmPolicyBoolean(payload.hostProc, "hostProc");
+  const hostSys = readOptionalVmPolicyBoolean(payload.hostSys, "hostSys");
+  const shareNetwork = readOptionalVmPolicyBoolean(payload.shareNetwork, "shareNetwork");
+  const unshareUser = readOptionalVmPolicyBoolean(payload.unshareUser, "unshareUser");
+  const unshareIpc = readOptionalVmPolicyBoolean(payload.unshareIpc, "unshareIpc");
+  const unsharePid = readOptionalVmPolicyBoolean(payload.unsharePid, "unsharePid");
+  const unshareUts = readOptionalVmPolicyBoolean(payload.unshareUts, "unshareUts");
+  const unshareCgroup = readOptionalVmPolicyBoolean(payload.unshareCgroup, "unshareCgroup");
 
   if (!target) {
     throw new VmServerHttpError(400, "Package privilege request requires a non-empty `target`.");
   }
 
-  if (!defaultPrivilegeLevel && (!allowedPrivilegeLevels || allowedPrivilegeLevels.length === 0) && !sandboxPolicyExtensions) {
+  if (
+		allowHostPrivileged === undefined
+		&& allowSandboxRw === undefined
+		&& defaultSandboxRw === undefined
+		&& hostDev === undefined
+		&& hostProc === undefined
+		&& hostSys === undefined
+		&& shareNetwork === undefined
+    && unshareUser === undefined
+    && unshareIpc === undefined
+    && unsharePid === undefined
+    && unshareUts === undefined
+    && unshareCgroup === undefined
+		&& !defaultPrivilegeLevel
+		&& (!allowedPrivilegeLevels || allowedPrivilegeLevels.length === 0)
+		&& !sandboxPolicyExtensions
+	) {
     throw new VmServerHttpError(
       400,
-      "Package privilege request requires `defaultPrivilegeLevel`, `allowedPrivilegeLevels`, or `sandboxPolicyExtensions`.",
+      "Package privilege request requires at least one flat policy boolean or a legacy privilege field.",
     );
   }
 
   return {
     target,
+    ...(allowHostPrivileged !== undefined ? { allowHostPrivileged } : {}),
+    ...(allowSandboxRw !== undefined ? { allowSandboxRw } : {}),
     ...(allowedPrivilegeLevels ? { allowedPrivilegeLevels } : {}),
+    ...(defaultSandboxRw !== undefined ? { defaultSandboxRw } : {}),
     ...(defaultPrivilegeLevel ? { defaultPrivilegeLevel } : {}),
+    ...(hostDev !== undefined ? { hostDev } : {}),
+    ...(hostProc !== undefined ? { hostProc } : {}),
+    ...(hostSys !== undefined ? { hostSys } : {}),
+    ...(shareNetwork !== undefined ? { shareNetwork } : {}),
+    ...(unshareUser !== undefined ? { unshareUser } : {}),
+    ...(unshareIpc !== undefined ? { unshareIpc } : {}),
+    ...(unsharePid !== undefined ? { unsharePid } : {}),
+    ...(unshareUts !== undefined ? { unshareUts } : {}),
+    ...(unshareCgroup !== undefined ? { unshareCgroup } : {}),
     ...(sandboxPolicyExtensions ? { sandboxPolicyExtensions } : {}),
   };
 }

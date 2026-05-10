@@ -9,7 +9,7 @@ export type AiListParams = {
 export const aiListModule = defineModule<AiListParams>({
 	id: "kits/ai/list",
 	category: "kits",
-	description: "List saved $ai connections and optionally select one for the current Activity",
+	description: "List available $ai connections and optionally select one for the current Activity",
 	consoleParams: [
 		{
 			name: "connection",

@@ -11,6 +11,11 @@ import {
   outputStack,
   type OutputEntity,
 } from "../primitives";
+import {
+  createNotebookLibrariesNamespace,
+  notebookLibraryDefinitions,
+  type NotebookLibraries,
+} from "../notebook-libs";
 import { BackgroundLifecycle, type BackgroundWorkerSnapshot } from "../worker";
 import { WorkerTop } from "../worker/top";
 import { createModulesTableEntity } from "./core/modules";
@@ -32,7 +37,9 @@ import type {
   ModuleDefinition,
   ModuleExecutionContext,
   ModuleExecutor,
+  ModulePaletteCommand,
 } from "./module";
+import { getModuleCategory } from "./module";
 import {
   ModuleSandbox,
   type ModuleSandboxEnvironment,
@@ -350,6 +357,7 @@ type ModuleExecutionOptions = {
 
 type ModuleEvalHostContext<THelpers extends object> = THelpers & {
   $: unknown;
+  $libs: NotebookLibraries;
   $axios: typeof $axios;
   $axiosRegistry: typeof $axiosRegistry;
   runtime: ModuleRuntime<THelpers>;
@@ -404,6 +412,7 @@ export class ModuleRuntime<THelpers extends object = object> {
   private readonly sessionStateManager: ConsoleSessionStateManager;
   private readonly sandbox: ModuleSandbox;
   private readonly outputStack: OutputStack;
+  private readonly notebookLibraries = createNotebookLibrariesNamespace();
   private currentModuleId: string | null = null;
   private currentApplication: {
     Component: React.ComponentType<any>;
@@ -459,6 +468,11 @@ export class ModuleRuntime<THelpers extends object = object> {
 
   getOutputStack(): OutputStack {
     return this.outputStack;
+  }
+
+  getBackgroundWorkerSnapshots(): BackgroundWorkerSnapshot[] {
+    const lifecycle = this.readBackgroundLifecycle();
+    return lifecycle ? lifecycle.getWorkerSnapshots() : [];
   }
 
   getHelpers(): THelpers {
@@ -729,6 +743,32 @@ export class ModuleRuntime<THelpers extends object = object> {
     return [...this.modules.values()].sort((left, right) =>
       left.id.localeCompare(right.id),
     );
+  }
+
+  listPaletteCommands(): ModulePaletteCommand[] {
+    return this.listModules()
+      .filter((definition) => !definition.palette?.hidden)
+      .map((definition) => ({
+        id: definition.id,
+        aliases: [...(definition.aliases ?? [])],
+        category: getModuleCategory(definition),
+        title: definition.palette?.title?.trim() || definition.id,
+        description: definition.description?.trim() || null,
+        keywords: [...new Set((definition.palette?.keywords ?? []).map((keyword) => keyword.trim()).filter((keyword) => keyword.length > 0))],
+        defaultParameterName: definition.defaultParameterName ?? null,
+        consoleParams: (definition.consoleParams ?? []).map((param) => ({
+          ...param,
+          values: param.values ? [...param.values] : undefined,
+        })),
+        hasRequiredParams: Boolean((definition.consoleParams ?? []).some((param) => param.required)),
+        subInput: definition.palette?.subInput
+          ? {
+            label: definition.palette.subInput.label?.trim() || null,
+            placeholder: definition.palette.subInput.placeholder?.trim() || null,
+            submitLabel: definition.palette.subInput.submitLabel?.trim() || null,
+          }
+          : null,
+      }));
   }
 
   useModule(id: string): AnyModuleDefinition {
@@ -1396,6 +1436,7 @@ export class ModuleRuntime<THelpers extends object = object> {
   }
 
   private getJsChainSuggestionItems(inputValue: string): ModuleConsoleSuggestionItem[] {
+    const trimmedStart = inputValue.trimStart();
     const context = this.parseJsChainSuggestionContext(inputValue);
     if (!context) {
       return [];
@@ -1414,11 +1455,56 @@ export class ModuleRuntime<THelpers extends object = object> {
       }
     }
 
-    return [...uniqueSuggestions.values()].slice(0, 10);
+    const suggestionLimit = trimmedStart.startsWith("$libs")
+      ? Math.max(16, notebookLibraryDefinitions.length + 4)
+      : 10;
+
+    return [...uniqueSuggestions.values()].slice(0, suggestionLimit);
   }
 
   getNotebookCompletionItems(inputValue: string): ModuleNotebookCompletionItem[] {
+    const trimmedStart = inputValue.trimStart();
+    const notebookStateSuggestions: ModuleNotebookCompletionItem[] = [
+      {
+        value: "$libs",
+        label: "$libs",
+        detail: "Notebook helper libraries namespace",
+        kind: "module",
+      },
+      {
+        value: "$prev",
+        label: "$prev",
+        detail: "Result of the previous executable notebook cell above the current one",
+        kind: "module",
+      },
+      {
+        value: "$last",
+        label: "$last",
+        detail: "Result of the last successfully executed notebook cell in this live session",
+        kind: "module",
+      },
+      {
+        value: "$notebook",
+        label: "$notebook",
+        detail: "Notebook session helpers: prev, last, get(cellId), has(cellId), keys()",
+        kind: "module",
+      },
+      {
+        value: "$notebook.get(\"cell-id\")",
+        label: "$notebook.get(...)",
+        detail: "Read a stored live-session result by notebook cell id",
+        kind: "command",
+      },
+      ...notebookLibraryDefinitions.map((definition) => ({
+        value: `$libs.${definition.key}`,
+        label: `$libs.${definition.key}`,
+        detail: definition.detail,
+        kind: "module" as const,
+      })),
+    ].filter((suggestion) => trimmedStart.length === 0 || suggestion.value.startsWith(trimmedStart));
+
     const suggestions = [
+      ...notebookStateSuggestions,
       ...this.getJsChainSuggestionItems(inputValue),
       ...getRecoverableVmCompletionItems(inputValue),
     ];
@@ -1435,7 +1521,11 @@ export class ModuleRuntime<THelpers extends object = object> {
       }
     }
 
-    return [...uniqueSuggestions.values()].slice(0, 10);
+    const suggestionLimit = trimmedStart.startsWith("$libs")
+      ? Math.max(16, notebookLibraryDefinitions.length + 4)
+      : 10;
+
+    return [...uniqueSuggestions.values()].slice(0, suggestionLimit);
   }
 
   getConsolePrompt(): string {
@@ -1449,6 +1539,16 @@ export class ModuleRuntime<THelpers extends object = object> {
     params?: TParams,
   ): Promise<TResult> {
     return await this.runModuleWithExecutionOptions(id, params);
+  }
+
+  async runModuleForWeb<TResult = unknown, TParams = unknown>(
+    id: string,
+    params?: TParams,
+  ): Promise<TResult> {
+    return await this.runModuleWithExecutionOptions(id, params, {
+      allowInteractiveApplications: false,
+      interactiveUnavailableTarget: "the web command palette",
+    });
   }
 
   private async runModuleWithExecutionOptions<TResult = unknown, TParams = unknown>(
@@ -1939,8 +2039,10 @@ export class ModuleRuntime<THelpers extends object = object> {
     executionOptions: ModuleExecutionOptions = {},
   ): ModuleEvalHostContext<THelpers> {
     return {
+      ...this.getSandboxEnvironment(),
       ...this.helpers,
       $: this.createJsModuleProxy(undefined, executionOptions),
+      $libs: this.notebookLibraries,
       $axios,
       $axiosRegistry,
       output: this.outputStack,

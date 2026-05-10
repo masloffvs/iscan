@@ -1,9 +1,23 @@
-import { extname } from "node:path";
+import { existsSync } from "node:fs";
+import { extname, resolve } from "node:path";
 
 import { logger } from "../logger";
 import { DEFAULT_WEB_PORT, resolveWebAssets } from "./build";
 
-const assetExtensions = new Set([".css", ".js", ".ico", ".json", ".map", ".png", ".svg", ".txt", ".webp"]);
+function resolveStaticAssetPath(rootDir: string, pathname: string): string | null {
+  const normalizedPath = pathname.replace(/^\/+/, "");
+  if (normalizedPath.length === 0) {
+    return null;
+  }
+
+  const assetPath = resolve(rootDir, normalizedPath);
+  const normalizedRoot = rootDir.endsWith("/") ? rootDir : `${rootDir}/`;
+  if (assetPath !== rootDir && !assetPath.startsWith(normalizedRoot)) {
+    return null;
+  }
+
+  return assetPath;
+}
 
 export async function startWebInterface(port = DEFAULT_WEB_PORT): Promise<never> {
   const assets = await resolveWebAssets();
@@ -30,15 +44,12 @@ export async function startWebInterface(port = DEFAULT_WEB_PORT): Promise<never>
         return new Response(Bun.file(assets.indexHtmlPath));
       }
 
-      if (pathname === "/app.js") {
-        return new Response(Bun.file(assets.appPath));
+      const assetPath = resolveStaticAssetPath(assets.outDir, pathname);
+      if (assetPath && existsSync(assetPath)) {
+        return new Response(Bun.file(assetPath));
       }
 
-      if (pathname === "/styles.css") {
-        return new Response(Bun.file(assets.cssPath));
-      }
-
-      if (assetExtensions.has(extname(pathname))) {
+      if (pathname.startsWith("/assets/") || extname(pathname).length > 0) {
         return new Response("Not found", { status: 404 });
       }
 

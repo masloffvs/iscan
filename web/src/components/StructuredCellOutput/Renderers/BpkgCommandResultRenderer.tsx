@@ -78,7 +78,7 @@ export default function BpkgCommandResultRenderer({
         <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#8c8c94]">
           Command
         </div>
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#f5d08a]">
+        <pre className="dense-scroll overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#f5d08a]">
           {commandLabel}
         </pre>
       </div>

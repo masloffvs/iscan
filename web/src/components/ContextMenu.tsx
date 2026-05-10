@@ -1,8 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, memo } from "react";
 import { useInterfaceStore } from "../store/ui";
 
-export default function ContextMenu() {
+export default memo(function ContextMenu() {
   const contextMenu = useInterfaceStore((state) => state.contextMenu);
   const closeContextMenu = useInterfaceStore((state) => state.closeContextMenu);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -121,4 +121,4 @@ export default function ContextMenu() {
       )}
     </AnimatePresence>
   );
-}
+});

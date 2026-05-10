@@ -87,16 +87,31 @@ async function main(): Promise<void> {
 	}
 }
 
-process.on("unhandledRejection", (error) => {
+let fatalWorkerShutdownScheduled = false;
+
+function handleFatalWorkerError(error: unknown): void {
+	if (fatalWorkerShutdownScheduled) {
+		return;
+	}
+
+	fatalWorkerShutdownScheduled = true;
 	postWorkerState("error", formatWorkerError(error));
 	process.exitCode = 1;
-	throw error;
+	setTimeout(() => {
+		process.exit(1);
+	}, 0);
+}
+
+process.on("unhandledRejection", (error) => {
+	handleFatalWorkerError(error);
 });
 
 process.on("uncaughtException", (error) => {
-	postWorkerState("error", formatWorkerError(error));
-	process.exitCode = 1;
-	throw error;
+	handleFatalWorkerError(error);
 });
 
-await main();
+try {
+	await main();
+} catch (error) {
+	handleFatalWorkerError(error);
+}

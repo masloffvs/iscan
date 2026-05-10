@@ -36,6 +36,18 @@ function collectTopLevelBindingNames(sourceFile: ts.SourceFile): string[] {
   return [...bindingNames];
 }
 
+export function collectTopLevelBindingNamesFromSource(source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    "recoverable-vm-bindings.tsx",
+    source,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TSX,
+  );
+
+  return collectTopLevelBindingNames(sourceFile);
+}
+
 function hasTopLevelReturn(sourceFile: ts.SourceFile): boolean {
   return sourceFile.statements.some(statement => ts.isReturnStatement(statement));
 }

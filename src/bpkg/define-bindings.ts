@@ -1,4 +1,8 @@
-import type { ModuleConsoleParam, ModuleConsoleParamValueType } from "../modules/module";
+import type {
+	ModuleConsoleParam,
+	ModuleConsoleParamValueType,
+	NotebookTypeOverlayDefinition,
+} from "../modules/module";
 
 export type BpkgPackageDependencySpec = {
 	pacman?: readonly string[];
@@ -22,8 +26,10 @@ export type BpkgBindingCommandSnapshot = {
 };
 
 export type BpkgBindingDefinition = {
+	acceptedExitCodes?: readonly number[];
 	description: string;
 	defaultParameterName?: string;
+	notebookTypeOverlay?: NotebookTypeOverlayDefinition;
 	parameters?: Record<string, BpkgBindingParameterDefinition>;
 	prepare?: BpkgBindingPrepare;
 	responseParser?: BpkgBindingResponseParser;

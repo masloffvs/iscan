@@ -1,6 +1,7 @@
+import { memo } from "react";
 import { useInterfaceStore } from "../store/ui";
 
-export default function StatusBar() {
+export default memo(function StatusBar() {
   const kernelStatus = useInterfaceStore((state) => state.kernelStatus);
   const serverStatus = useInterfaceStore((state) => state.serverStatus);
   const isSaving = useInterfaceStore((state) => state.isSaving);
@@ -8,7 +9,15 @@ export default function StatusBar() {
   const currentFsPath = useInterfaceStore((state) => state.currentFsPath);
   const isFsDirty = useInterfaceStore((state) => state.isFsDirty);
   const selectedFileId = useInterfaceStore((state) => state.selectedFileId);
+  const selectedApplicationInstanceId = useInterfaceStore((state) => state.selectedApplicationInstanceId);
+  const applicationInstances = useInterfaceStore((state) => state.applicationInstances);
   const lastRunLabel = useInterfaceStore((state) => state.lastRunLabel);
+
+  const activeApplication = selectedApplicationInstanceId
+    ? applicationInstances.find((instance) => instance.instanceId === selectedApplicationInstanceId) ?? null
+    : null;
+  const currentSurfaceLabel = activeApplication?.title ?? selectedFileId ?? "none";
+  const currentSurfaceKind = activeApplication ? "App" : "File";
 
   const statusTone = serverStatus === "error"
     ? "bg-rose-500/60"
@@ -34,8 +43,8 @@ export default function StatusBar() {
       </div>
       <div className="flex items-center gap-6">
         <div className="flex items-center gap-2">
-          <span className="uppercase tracking-[0.1em] text-[#68686e]">File:</span>
-          <span className="truncate max-w-[200px] text-right text-[#c9c9cf]">{selectedFileId || "none"}</span>
+          <span className="uppercase tracking-[0.1em] text-[#68686e]">{currentSurfaceKind}:</span>
+          <span className="truncate max-w-[200px] text-right text-[#c9c9cf]">{currentSurfaceLabel}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="uppercase tracking-[0.1em] text-[#68686e]">Kernel:</span>
@@ -52,4 +61,4 @@ export default function StatusBar() {
       </div>
     </footer>
   );
-}
+});

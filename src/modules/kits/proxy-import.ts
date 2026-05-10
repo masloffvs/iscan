@@ -1,7 +1,7 @@
 import { defineExecutor, defineModule } from "../module";
 import { InvalidParamsError } from "../errors";
 import { applyProxyBatchText, createProxyBatchReport } from "./proxy-import-shared";
-import { ensureProxyKit, parseOptionalProxyType, parseOptionalString, PROXY_TYPE_VALUES } from "./proxy-shared";
+import { ensureProxyKit, parseOptionalProxyType, parseOptionalString, PROXY_NOTEBOOK_TYPE_OVERLAY, PROXY_TYPE_VALUES } from "./proxy-shared";
 
 export type ProxyImportParams = {
 	text?: string;
@@ -28,6 +28,7 @@ export const proxyImportModule = defineModule<ProxyImportParams>({
 	id: "kits/proxy/import",
 	category: "kits",
 	description: "Append free-form proxy input to the saved inventory using notebook-safe batch parsing",
+	notebookTypeOverlay: PROXY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: PROXY_IMPORT_CONSOLE_PARAMS,
 	executor: defineExecutor<ProxyImportParams>(async (context) => {
 		const text = parseOptionalString(context.params.text, "text");

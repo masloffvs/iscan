@@ -7,12 +7,19 @@ import {
   type CloakViewportPreset,
 } from "../../kits/cloak-profile-editor";
 import { type CloakKit, type CloakProfile } from "../../kits/cloak-kit";
-import { MICROLINK_UA_KIT_ID, MicrolinkUaKit } from "../../kits/microlink-ua-kit";
+import { MicrolinkUaKit } from "../../kits/microlink-ua-kit";
+import { type UaKit } from "../../kits/ua-kit";
 import { type ProxyProfile } from "../../kits/proxy-kit";
 import { formatProxyProfileUrl } from "../../modules/kits/proxy-shared";
 import { VmServerHttpError } from "./http";
 import { normalizeRequiredTrimmedString } from "./parsers";
 import type { VmBrowserProfileEditorData, VmBrowserUserAgentSelection, VmBrowserViewportSelection } from "./types";
+
+async function listVmBrowserUserAgents(userAgentKit: UaKit): Promise<string[]> {
+  return [...new Set(
+    (await userAgentKit.listExactAgents({ categories: ["user"] })).map((record) => record.userAgent),
+  )];
+}
 
 export function resolveVmBrowserProfile(profiles: readonly CloakProfile[], target: string): CloakProfile {
   const normalizedTarget = normalizeRequiredTrimmedString(target, "Browser profile target");
@@ -173,11 +180,11 @@ async function createVmBrowserProfileEditorData(
 
 export async function createVmBrowserProfilePayload(
   kit: CloakKit,
-  userAgentKit: MicrolinkUaKit,
+  userAgentKit: UaKit,
   profile: CloakProfile,
   proxies: readonly ProxyProfile[],
 ) {
-  const userAgents = await userAgentKit.listUserAgents();
+  const userAgents = await listVmBrowserUserAgents(userAgentKit);
   return {
     editorData: await createVmBrowserProfileEditorData(userAgents, profile),
     profile: createVmEditableBrowserProfile(kit, profile, proxies),

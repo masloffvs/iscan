@@ -5,6 +5,60 @@ services:
     BEARER_TOKEN: "4aJA9:e4463a02-4462-497f-be04-8aa09ec12a49"
   storage:
     DATABASE_URL: "data/iscan.db"
+  portScan:
+    ALLOW_HOSTS: ["*"]
+    DENY_HOSTS: []
+    ALLOW_PRIVATE_ADDRESSES: true
+    ALLOW_LOOPBACK: true
+    DENY_PUBLIC_ADDRESSES: false
+  exploitdb:
+    LIST_URL: "https://www.exploit-db.com/"
+    RAW_URL_TEMPLATE: "https://www.exploit-db.com/raw/{id}"
+    DOWNLOAD_URL_TEMPLATE: "https://www.exploit-db.com/download/{id}"
+    REFRESH_INTERVAL_MS: 86400000
+    REQUEST_TIMEOUT_MS: 15000
+    PAGE_SIZE: 15
+    RECENT_PAGE_WINDOW: 8
+    BACKFILL_PAGE_BUDGET: 64
+    RAW_FETCH_CONCURRENCY: 4
+    REFRESH_ON_EMPTY: true
+    BACKFILL_ON_EMPTY: true
+  ua:
+    REFRESH_INTERVAL_MS: 86400000
+    STALE_AFTER_MS: 86400000
+    REFRESH_ON_EMPTY: true
+    SOURCES:
+      - ID: microlink
+        KIND: microlink-json
+        URL: "https://microlink.io/user-agents.json"
+        ENABLED: true
+        CATEGORIES:
+          - user
+          - crawler
+          - ai
+        RECORD_KINDS:
+          - exact
+      - ID: arcjet-well-known-bots
+        KIND: arcjet-well-known-bots
+        URL: "https://raw.githubusercontent.com/arcjet/well-known-bots/main/well-known-bots.json"
+        ENABLED: true
+        RECORD_KINDS:
+          - exact
+          - pattern
+      - ID: cloudflare-bot-directory
+        KIND: cloudflare-bot-directory
+        URL: "https://raw.githubusercontent.com/microlinkhq/cloudflare-bot-directory/master/src/index.json"
+        ENABLED: true
+        RECORD_KINDS:
+          - exact
+          - pattern
+      - ID: crawler-user-agents
+        KIND: crawler-user-agents
+        URL: "https://raw.githubusercontent.com/monperrus/crawler-user-agents/master/crawler-user-agents.json"
+        ENABLED: true
+        RECORD_KINDS:
+          - exact
+          - pattern
 
 runtime:
   backgroundWorkers:

@@ -11,6 +11,7 @@ import { json } from "@codemirror/lang-json";
 import { githubDarkInit } from "@uiw/codemirror-theme-github";
 import PackageBoxTerminal from "./PackageBoxTerminal";
 import type {
+  RemotePackageBoxPolicy,
   RemotePackagePrivilegeLevel,
   RemotePackageSandboxBindMount,
   RemotePackageSandboxBindMountMode,
@@ -24,6 +25,34 @@ import { useInterfaceStore, type PackageBoxModalTab } from "../store/ui";
 
 const EMPTY_PACKAGE_IDS: readonly string[] = [];
 const PACKAGE_PRIVILEGE_LEVELS: readonly RemotePackagePrivilegeLevel[] = ["sandbox-ro", "sandbox-rw", "host-privileged"];
+const PACKAGE_POLICY_BOOLEAN_KEYS = [
+  "allowHostPrivileged",
+  "allowSandboxRw",
+  "defaultSandboxRw",
+  "hostDev",
+  "hostProc",
+  "hostSys",
+  "shareNetwork",
+  "unshareUser",
+  "unshareIpc",
+  "unsharePid",
+  "unshareUts",
+  "unshareCgroup",
+] as const satisfies readonly (keyof RemotePackageBoxPolicy)[];
+const DEFAULT_BOX_POLICY: Readonly<RemotePackageBoxPolicy> = {
+  allowHostPrivileged: false,
+  allowSandboxRw: true,
+  defaultSandboxRw: false,
+  hostDev: false,
+  hostProc: false,
+  hostSys: false,
+  shareNetwork: true,
+  unshareUser: true,
+  unshareIpc: true,
+  unsharePid: true,
+  unshareUts: true,
+  unshareCgroup: true,
+};
 const PACKAGE_SANDBOX_SYS_MODES: readonly RemotePackageSandboxSysMode[] = ["off", "host-ro", "host-rw", "sysfs"];
 const PACKAGE_SANDBOX_DEV_MODES: readonly RemotePackageSandboxDevMode[] = ["sandbox", "host"];
 const PACKAGE_SANDBOX_PROC_MODES: readonly RemotePackageSandboxProcMode[] = ["sandbox", "host-ro", "host-rw"];
@@ -56,22 +85,11 @@ type PolicyValidationIssue = {
   message: string;
 };
 
-type PackageBoxPolicyDraft = {
-  allowedPrivilegeLevels: RemotePackagePrivilegeLevel[];
-  defaultPrivilegeLevel: RemotePackagePrivilegeLevel;
-  sandboxPolicyExtensions: RemotePackageSandboxPolicyExtensions;
-};
+type PackageBoxPolicyDraft = RemotePackageBoxPolicy;
 
 type PolicyValidationResult = {
   issues: PolicyValidationIssue[];
   parsedPolicy: PackageBoxPolicyDraft | null;
-};
-
-type PolicyPresetDefinition = {
-  description: string;
-  id: string;
-  patch: Partial<RemotePackageSandboxPolicyExtensions>;
-  title: string;
 };
 
 type BoxPresetDefinition = {
@@ -146,6 +164,58 @@ function formatAllowedPrivilegeLevels(levels: readonly RemotePackagePrivilegeLev
   }
 
   return orderPrivilegeLevels(levels).map((level) => formatPrivilegeLevel(level)).join(", ");
+}
+
+function createDefaultBoxPolicy(): RemotePackageBoxPolicy {
+  return {
+    allowHostPrivileged: DEFAULT_BOX_POLICY.allowHostPrivileged,
+    allowSandboxRw: DEFAULT_BOX_POLICY.allowSandboxRw,
+    defaultSandboxRw: DEFAULT_BOX_POLICY.defaultSandboxRw,
+    hostDev: DEFAULT_BOX_POLICY.hostDev,
+    hostProc: DEFAULT_BOX_POLICY.hostProc,
+    hostSys: DEFAULT_BOX_POLICY.hostSys,
+    shareNetwork: DEFAULT_BOX_POLICY.shareNetwork,
+    unshareUser: DEFAULT_BOX_POLICY.unshareUser,
+    unshareIpc: DEFAULT_BOX_POLICY.unshareIpc,
+    unsharePid: DEFAULT_BOX_POLICY.unsharePid,
+    unshareUts: DEFAULT_BOX_POLICY.unshareUts,
+    unshareCgroup: DEFAULT_BOX_POLICY.unshareCgroup,
+  };
+}
+
+function extractBoxPolicy(value: RemotePackageBoxPolicy): RemotePackageBoxPolicy {
+  return {
+    allowHostPrivileged: value.allowHostPrivileged,
+    allowSandboxRw: value.allowSandboxRw,
+    defaultSandboxRw: value.defaultSandboxRw,
+    hostDev: value.hostDev,
+    hostProc: value.hostProc,
+    hostSys: value.hostSys,
+    shareNetwork: value.shareNetwork,
+    unshareUser: value.unshareUser,
+    unshareIpc: value.unshareIpc,
+    unsharePid: value.unsharePid,
+    unshareUts: value.unshareUts,
+    unshareCgroup: value.unshareCgroup,
+  };
+}
+
+function deriveDefaultPrivilegeLevel(value: RemotePackageBoxPolicy): RemotePackagePrivilegeLevel {
+  return value.defaultSandboxRw ? "sandbox-rw" : "sandbox-ro";
+}
+
+function deriveAllowedPrivilegeLevels(value: RemotePackageBoxPolicy): RemotePackagePrivilegeLevel[] {
+  return orderPrivilegeLevels([
+    "sandbox-ro",
+    ...(value.allowSandboxRw ? ["sandbox-rw" as const] : []),
+    ...(value.allowHostPrivileged ? ["host-privileged" as const] : []),
+  ]);
+}
+
+function formatPolicyBooleanSummary(value: RemotePackageBoxPolicy): string {
+  return PACKAGE_POLICY_BOOLEAN_KEYS
+    .map((key) => `${key}=${value[key] ? "true" : "false"}`)
+    .join(" · ");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -228,19 +298,63 @@ function formatSandboxBindMount(entry: RemotePackageSandboxBindMount): string {
   return `${formatSandboxBindMountMode(entry.mode)} ${entry.source} -> ${entry.target}`;
 }
 
-function formatSandboxPolicySummary(value: RemotePackageSandboxPolicyExtensions): string {
+function formatSandboxPolicySummary(value: RemotePackageBoxPolicy): string {
   const parts = [
-    `sys: ${value.sysMode === "off" ? "off" : formatSandboxSysMode(value.sysMode)}`,
-    `dev: ${value.devMode === "sandbox" ? "sandbox" : "host"}`,
-    `proc: ${value.procMode === "sandbox" ? "sandbox" : formatSandboxProcMode(value.procMode)}`,
+    `sys: ${value.hostSys ? "host-ro" : "off"}`,
+    `dev: ${value.hostDev ? "host" : "sandbox"}`,
+    `proc: ${value.hostProc ? "host-ro" : "sandbox"}`,
     value.shareNetwork ? "net: shared" : "net: private",
   ];
 
-  if (value.extraBindMounts.length > 0) {
-    parts.push(`binds: ${value.extraBindMounts.length}`);
+  return parts.join(" · ");
+}
+
+function formatNamespacePolicySummary(value: RemotePackageBoxPolicy): string {
+  return [
+    `user: ${value.unshareUser ? "private" : "host"}`,
+    `ipc: ${value.unshareIpc ? "private" : "host"}`,
+    `pid: ${value.unsharePid ? "private" : "host"}`,
+    `uts: ${value.unshareUts ? "private" : "host"}`,
+    `cgroup: ${value.unshareCgroup ? "private" : "host"}`,
+  ].join(" · ");
+}
+
+function formatBwrapFlagSummary(value: RemotePackageBoxPolicy, boxId: string): string {
+  const flags: string[] = [];
+
+  if (value.unshareUser) {
+    flags.push("--unshare-user", "--uid 0", "--gid 0");
   }
 
-  return parts.join(" · ");
+  if (value.unshareIpc) {
+    flags.push("--unshare-ipc");
+  }
+
+  if (value.unsharePid) {
+    flags.push("--unshare-pid");
+  }
+
+  if (!value.shareNetwork) {
+    flags.push("--unshare-net");
+  }
+
+  if (value.unshareUts) {
+    flags.push("--unshare-uts", `--hostname ${boxId}-box`);
+  }
+
+  if (value.unshareCgroup) {
+    flags.push("--unshare-cgroup");
+  }
+
+  return flags.length > 0 ? flags.join(" ") : "no namespace flags";
+}
+
+function parsePolicyBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean.`);
+  }
+
+  return value;
 }
 
 function parseEnumValue<T extends string>(value: unknown, label: string, allowed: readonly T[]): T {
@@ -322,21 +436,20 @@ function parseSandboxPolicyExtensions(value: unknown): RemotePackageSandboxPolic
   };
 }
 
-function formatPolicyJson(
-  defaultPrivilegeLevel: RemotePackagePrivilegeLevel,
-  allowedPrivilegeLevels: readonly RemotePackagePrivilegeLevel[],
-  sandboxPolicyExtensions: RemotePackageSandboxPolicyExtensions = createDefaultSandboxPolicyExtensions(),
-): string {
+function formatPolicyJson(policy: RemotePackageBoxPolicy): string {
   return JSON.stringify({
-    allowedPrivilegeLevels: orderPrivilegeLevels(allowedPrivilegeLevels),
-    defaultPrivilegeLevel,
-    sandboxPolicyExtensions: {
-      devMode: sandboxPolicyExtensions.devMode,
-      extraBindMounts: sandboxPolicyExtensions.extraBindMounts.map((entry) => ({ ...entry })),
-      procMode: sandboxPolicyExtensions.procMode,
-      shareNetwork: sandboxPolicyExtensions.shareNetwork,
-      sysMode: sandboxPolicyExtensions.sysMode,
-    },
+    allowHostPrivileged: policy.allowHostPrivileged,
+    allowSandboxRw: policy.allowSandboxRw,
+    defaultSandboxRw: policy.defaultSandboxRw,
+    hostDev: policy.hostDev,
+    hostProc: policy.hostProc,
+    hostSys: policy.hostSys,
+    shareNetwork: policy.shareNetwork,
+    unshareUser: policy.unshareUser,
+    unshareIpc: policy.unshareIpc,
+    unsharePid: policy.unsharePid,
+    unshareUts: policy.unshareUts,
+    unshareCgroup: policy.unshareCgroup,
   }, null, 2);
 }
 
@@ -353,36 +466,21 @@ function parsePolicyJsonValue(value: unknown): PackageBoxPolicyDraft {
     throw new Error("Policy JSON must be an object.");
   }
 
-  const candidate = value as {
-    defaultPrivilegeLevel?: unknown;
-    allowedPrivilegeLevels?: unknown;
-    sandboxPolicyExtensions?: unknown;
-  };
-  if (typeof candidate.defaultPrivilegeLevel !== "string" || !PACKAGE_PRIVILEGE_LEVELS.includes(candidate.defaultPrivilegeLevel as RemotePackagePrivilegeLevel)) {
-    throw new Error(`defaultPrivilegeLevel must be one of: ${PACKAGE_PRIVILEGE_LEVELS.join(", ")}.`);
-  }
-
-  if (!Array.isArray(candidate.allowedPrivilegeLevels)) {
-    throw new Error("allowedPrivilegeLevels must be an array.");
-  }
-
-  const allowedPrivilegeLevels = candidate.allowedPrivilegeLevels.map((entry, index) => {
-    if (typeof entry !== "string" || !PACKAGE_PRIVILEGE_LEVELS.includes(entry as RemotePackagePrivilegeLevel)) {
-      throw new Error(`allowedPrivilegeLevels[${index}] must be one of: ${PACKAGE_PRIVILEGE_LEVELS.join(", ")}.`);
-    }
-
-    return entry as RemotePackagePrivilegeLevel;
-  });
-  const orderedAllowedPrivilegeLevels = orderPrivilegeLevels(allowedPrivilegeLevels);
-  const defaultPrivilegeLevel = candidate.defaultPrivilegeLevel as RemotePackagePrivilegeLevel;
-  if (!orderedAllowedPrivilegeLevels.includes(defaultPrivilegeLevel)) {
-    throw new Error("allowedPrivilegeLevels must include defaultPrivilegeLevel.");
-  }
+  const candidate = value as Partial<Record<(typeof PACKAGE_POLICY_BOOLEAN_KEYS)[number], unknown>>;
 
   return {
-    allowedPrivilegeLevels: orderedAllowedPrivilegeLevels,
-    defaultPrivilegeLevel,
-    sandboxPolicyExtensions: parseSandboxPolicyExtensions(candidate.sandboxPolicyExtensions),
+    allowHostPrivileged: parsePolicyBoolean(candidate.allowHostPrivileged, "allowHostPrivileged"),
+    allowSandboxRw: parsePolicyBoolean(candidate.allowSandboxRw, "allowSandboxRw"),
+    defaultSandboxRw: parsePolicyBoolean(candidate.defaultSandboxRw, "defaultSandboxRw"),
+    hostDev: parsePolicyBoolean(candidate.hostDev, "hostDev"),
+    hostProc: parsePolicyBoolean(candidate.hostProc, "hostProc"),
+    hostSys: parsePolicyBoolean(candidate.hostSys, "hostSys"),
+    shareNetwork: parsePolicyBoolean(candidate.shareNetwork, "shareNetwork"),
+    unshareUser: parsePolicyBoolean(candidate.unshareUser, "unshareUser"),
+    unshareIpc: parsePolicyBoolean(candidate.unshareIpc, "unshareIpc"),
+    unsharePid: parsePolicyBoolean(candidate.unsharePid, "unsharePid"),
+    unshareUts: parsePolicyBoolean(candidate.unshareUts, "unshareUts"),
+    unshareCgroup: parsePolicyBoolean(candidate.unshareCgroup, "unshareCgroup"),
   };
 }
 
@@ -408,51 +506,12 @@ function validatePolicySource(
 
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     const candidate = parsed as Record<string, unknown>;
-    const unknownKeys = Object.keys(candidate).filter((key) => key !== "allowedPrivilegeLevels" && key !== "defaultPrivilegeLevel" && key !== "sandboxPolicyExtensions");
+    const unknownKeys = Object.keys(candidate).filter((key) => !PACKAGE_POLICY_BOOLEAN_KEYS.includes(key as (typeof PACKAGE_POLICY_BOOLEAN_KEYS)[number]));
     if (unknownKeys.length > 0) {
       issues.push({
         severity: "warning",
         message: `Unknown key(s) will be ignored by the policy editor: ${unknownKeys.join(", ")}.`,
       });
-    }
-
-    if (Array.isArray(candidate.allowedPrivilegeLevels)) {
-      const duplicates = candidate.allowedPrivilegeLevels
-        .filter((entry): entry is string => typeof entry === "string")
-        .filter((entry, index, entries) => entries.indexOf(entry) !== index);
-      if (duplicates.length > 0) {
-        issues.push({
-          severity: "warning",
-          message: `Duplicate allowedPrivilegeLevels will be normalized away: ${[...new Set(duplicates)].join(", ")}.`,
-        });
-      }
-    }
-
-    if (candidate.sandboxPolicyExtensions && isRecord(candidate.sandboxPolicyExtensions)) {
-      const unknownSandboxKeys = Object.keys(candidate.sandboxPolicyExtensions)
-        .filter((key) => key !== "devMode" && key !== "extraBindMounts" && key !== "procMode" && key !== "shareNetwork" && key !== "sysMode");
-      if (unknownSandboxKeys.length > 0) {
-        issues.push({
-          severity: "warning",
-          message: `Unknown sandboxPolicyExtensions key(s) will be ignored: ${unknownSandboxKeys.join(", ")}.`,
-        });
-      }
-
-      if (Array.isArray(candidate.sandboxPolicyExtensions.extraBindMounts)) {
-        candidate.sandboxPolicyExtensions.extraBindMounts.forEach((entry, index) => {
-          if (!isRecord(entry)) {
-            return;
-          }
-
-          const unknownBindKeys = Object.keys(entry).filter((key) => key !== "mode" && key !== "source" && key !== "target");
-          if (unknownBindKeys.length > 0) {
-            issues.push({
-              severity: "warning",
-              message: `Unknown extraBindMounts[${index}] key(s) will be ignored: ${unknownBindKeys.join(", ")}.`,
-            });
-          }
-        });
-      }
     }
   }
 
@@ -464,43 +523,77 @@ function validatePolicySource(
     return { issues, parsedPolicy: null };
   }
 
-  if (!parsedPolicy.allowedPrivilegeLevels.includes("sandbox-ro")) {
+  if (parsedPolicy.defaultSandboxRw && !parsedPolicy.allowSandboxRw) {
     issues.push({
-      severity: "warning",
-      message: "sandbox-ro is not available as a fallback in allowedPrivilegeLevels.",
+      severity: "error",
+      message: "defaultSandboxRw=true requires allowSandboxRw=true.",
     });
   }
 
-  if (!parsedPolicy.sandboxPolicyExtensions.shareNetwork) {
+  if (!parsedPolicy.shareNetwork) {
     issues.push({
       severity: "warning",
-      message: "shareNetwork=false keeps the box on a private network namespace; package downloads and scanners may stop seeing the host network.",
+      message: "shareNetwork=false adds --unshare-net; scanners and package downloads stop seeing the host network unless the box has its own routing.",
     });
   }
 
-  if (parsedPolicy.sandboxPolicyExtensions.sysMode === "host-rw") {
+  if (parsedPolicy.hostDev) {
     issues.push({
       severity: "warning",
-      message: "sysMode=host-rw exposes the host /sys tree as writable inside sandbox runs.",
+      message: "hostDev=true bind-mounts the host /dev tree into sandbox runs.",
     });
   }
 
-  if (parsedPolicy.sandboxPolicyExtensions.procMode === "host-rw") {
+  if (parsedPolicy.hostProc) {
     issues.push({
       severity: "warning",
-      message: "procMode=host-rw exposes the host /proc tree as writable inside sandbox runs.",
+      message: "hostProc=true bind-mounts the host /proc tree read-only into sandbox runs.",
     });
   }
 
-  const writableBindMounts = parsedPolicy.sandboxPolicyExtensions.extraBindMounts.filter((entry) => entry.mode !== "ro-bind");
-  if (writableBindMounts.length > 0) {
+  if (parsedPolicy.hostSys) {
     issues.push({
       severity: "warning",
-      message: `Writable bind mounts are enabled: ${writableBindMounts.map((entry) => `${entry.source} (${entry.mode})`).join(", ")}.`,
+      message: "hostSys=true bind-mounts the host /sys tree read-only into sandbox runs.",
     });
   }
 
-  if (parsedPolicy.allowedPrivilegeLevels.includes("host-privileged") || parsedPolicy.defaultPrivilegeLevel === "host-privileged") {
+  if (!parsedPolicy.unshareUser) {
+    issues.push({
+      severity: "warning",
+      message: "unshareUser=false drops --unshare-user and the fake root uid/gid mapping; the command runs as the host user instead of uid 0 inside bwrap.",
+    });
+  }
+
+  if (!parsedPolicy.unshareIpc) {
+    issues.push({
+      severity: "warning",
+      message: "unshareIpc=false shares the host IPC namespace with sandbox runs.",
+    });
+  }
+
+  if (!parsedPolicy.unsharePid) {
+    issues.push({
+      severity: "warning",
+      message: "unsharePid=false shares the host PID namespace with sandbox runs.",
+    });
+  }
+
+  if (!parsedPolicy.unshareUts) {
+    issues.push({
+      severity: "warning",
+      message: "unshareUts=false skips the sandbox hostname override and keeps the host UTS namespace.",
+    });
+  }
+
+  if (!parsedPolicy.unshareCgroup) {
+    issues.push({
+      severity: "warning",
+      message: "unshareCgroup=false shares the host cgroup namespace with sandbox runs.",
+    });
+  }
+
+  if (parsedPolicy.allowHostPrivileged) {
     if (hostInfo) {
       if (!hostInfo.archCompatible) {
         issues.push({ severity: "error", message: `This host cannot run host-privileged boxes. ${describeHostPrivilegedConstraint()}` });
@@ -524,17 +617,20 @@ const POLICY_TEMPLATE_COMPLETION: Completion = {
   label: "policy template",
   type: "keyword",
   apply: `{
-  "allowedPrivilegeLevels": ["sandbox-ro", "sandbox-rw"],
-  "defaultPrivilegeLevel": "sandbox-ro",
-  "sandboxPolicyExtensions": {
-    "sysMode": "off",
-    "devMode": "sandbox",
-    "procMode": "sandbox",
-    "shareNetwork": true,
-    "extraBindMounts": []
-  }
+  "allowHostPrivileged": false,
+  "allowSandboxRw": true,
+  "defaultSandboxRw": false,
+  "hostDev": false,
+  "hostProc": false,
+  "hostSys": false,
+  "shareNetwork": true,
+  "unshareUser": true,
+  "unshareIpc": true,
+  "unsharePid": true,
+  "unshareUts": true,
+  "unshareCgroup": true
 }`,
-  detail: "Insert a starter policy object",
+  detail: "Insert a flat boolean-only policy object",
 };
 
 function createEnumValueCompletions<T extends string>(
@@ -558,82 +654,78 @@ function createBooleanValueCompletions(): Completion[] {
 }
 
 function createPolicyKeyCompletions(scope: "root" | "sandbox" | "bind", inStringContext: boolean): Completion[] {
-  if (scope === "sandbox") {
-    return [
-      {
-        label: "sysMode",
-        type: "property",
-        apply: inStringContext ? "sysMode\"" : '"sysMode": "off"',
-        detail: "How /sys is exposed inside bwrap",
-      },
-      {
-        label: "devMode",
-        type: "property",
-        apply: inStringContext ? "devMode\"" : '"devMode": "sandbox"',
-        detail: "Whether /dev stays synthetic or binds host /dev",
-      },
-      {
-        label: "procMode",
-        type: "property",
-        apply: inStringContext ? "procMode\"" : '"procMode": "sandbox"',
-        detail: "How /proc is exposed inside bwrap",
-      },
-      {
-        label: "shareNetwork",
-        type: "property",
-        apply: inStringContext ? "shareNetwork\"" : '"shareNetwork": true',
-        detail: "Share or isolate the host network namespace",
-      },
-      {
-        label: "extraBindMounts",
-        type: "property",
-        apply: inStringContext ? "extraBindMounts\"" : '"extraBindMounts": []',
-        detail: "Additional bind mounts appended to the bwrap command",
-      },
-    ];
-  }
-
-  if (scope === "bind") {
-    return [
-      {
-        label: "source",
-        type: "property",
-        apply: inStringContext ? "source\"" : '"source": "/sys"',
-        detail: "Host path to bind",
-      },
-      {
-        label: "target",
-        type: "property",
-        apply: inStringContext ? "target\"" : '"target": "/sys"',
-        detail: "Path inside the box",
-      },
-      {
-        label: "mode",
-        type: "property",
-        apply: inStringContext ? "mode\"" : '"mode": "ro-bind"',
-        detail: "bwrap bind flag for this mount",
-      },
-    ];
-  }
-
   return [
     {
-      label: "allowedPrivilegeLevels",
+      label: "allowHostPrivileged",
       type: "property",
-      apply: inStringContext ? "allowedPrivilegeLevels\"" : '"allowedPrivilegeLevels": ["sandbox-ro", "sandbox-rw"]',
-      detail: "Allowed privilege overrides",
+      apply: inStringContext ? "allowHostPrivileged\"" : '"allowHostPrivileged": false',
+      detail: "Allow host-privileged overrides through systemd-nspawn",
     },
     {
-      label: "defaultPrivilegeLevel",
+      label: "allowSandboxRw",
       type: "property",
-      apply: inStringContext ? "defaultPrivilegeLevel\"" : '"defaultPrivilegeLevel": "sandbox-ro"',
-      detail: "Default privilege level",
+      apply: inStringContext ? "allowSandboxRw\"" : '"allowSandboxRw": true',
+      detail: "Allow sandbox-rw overrides in addition to sandbox-ro",
     },
     {
-      label: "sandboxPolicyExtensions",
+      label: "defaultSandboxRw",
       type: "property",
-      apply: inStringContext ? "sandboxPolicyExtensions\"" : '"sandboxPolicyExtensions": {\n  "sysMode": "off",\n  "devMode": "sandbox",\n  "procMode": "sandbox",\n  "shareNetwork": true,\n  "extraBindMounts": []\n}',
-      detail: "Optional bwrap mount and namespace extensions",
+      apply: inStringContext ? "defaultSandboxRw\"" : '"defaultSandboxRw": false',
+      detail: "Use sandbox-rw as the box default instead of sandbox-ro",
+    },
+    {
+      label: "hostDev",
+      type: "property",
+      apply: inStringContext ? "hostDev\"" : '"hostDev": false',
+      detail: "Bind the host /dev tree into sandbox runs",
+    },
+    {
+      label: "hostProc",
+      type: "property",
+      apply: inStringContext ? "hostProc\"" : '"hostProc": false',
+      detail: "Bind the host /proc tree read-only into sandbox runs",
+    },
+    {
+      label: "hostSys",
+      type: "property",
+      apply: inStringContext ? "hostSys\"" : '"hostSys": false',
+      detail: "Bind the host /sys tree read-only into sandbox runs",
+    },
+    {
+      label: "shareNetwork",
+      type: "property",
+      apply: inStringContext ? "shareNetwork\"" : '"shareNetwork": true',
+      detail: "Share or isolate the host network namespace for sandbox runs",
+    },
+    {
+      label: "unshareUser",
+      type: "property",
+      apply: inStringContext ? "unshareUser\"" : '"unshareUser": true',
+      detail: "Toggle --unshare-user and the uid/gid 0 mapping for bwrap runs",
+    },
+    {
+      label: "unshareIpc",
+      type: "property",
+      apply: inStringContext ? "unshareIpc\"" : '"unshareIpc": true',
+      detail: "Toggle --unshare-ipc for bwrap runs",
+    },
+    {
+      label: "unsharePid",
+      type: "property",
+      apply: inStringContext ? "unsharePid\"" : '"unsharePid": true',
+      detail: "Toggle --unshare-pid for bwrap runs",
+    },
+    {
+      label: "unshareUts",
+      type: "property",
+      apply: inStringContext ? "unshareUts\"" : '"unshareUts": true',
+      detail: "Toggle --unshare-uts and the sandbox hostname override",
+    },
+    {
+      label: "unshareCgroup",
+      type: "property",
+      apply: inStringContext ? "unshareCgroup\"" : '"unshareCgroup": true',
+      detail: "Toggle --unshare-cgroup for bwrap runs",
     },
   ];
 }
@@ -642,22 +734,7 @@ function createPolicyValueCompletions(
   kind: "privilege" | "sys" | "dev" | "proc" | "bindMode" | "boolean",
   inStringContext: boolean,
 ): Completion[] {
-  switch (kind) {
-    case "privilege":
-      return createEnumValueCompletions(PACKAGE_PRIVILEGE_LEVELS, inStringContext, formatPrivilegeLevel);
-    case "sys":
-      return createEnumValueCompletions(PACKAGE_SANDBOX_SYS_MODES, inStringContext, formatSandboxSysMode);
-    case "dev":
-      return createEnumValueCompletions(PACKAGE_SANDBOX_DEV_MODES, inStringContext, formatSandboxDevMode);
-    case "proc":
-      return createEnumValueCompletions(PACKAGE_SANDBOX_PROC_MODES, inStringContext, formatSandboxProcMode);
-    case "bindMode":
-      return createEnumValueCompletions(PACKAGE_SANDBOX_BIND_MOUNT_MODES, inStringContext, formatSandboxBindMountMode);
-    case "boolean":
-      return createBooleanValueCompletions();
-    default:
-      return [];
-  }
+  return createBooleanValueCompletions();
 }
 
 function createPolicyCompletionResult(from: number, to: number, options: readonly Completion[]): CompletionResult | null {
@@ -671,46 +748,7 @@ function createPolicyCompletionResult(from: number, to: number, options: readonl
 function policyCompletionSource(context: CompletionContext): CompletionResult | null {
   const source = context.state.doc.toString();
   const prefix = source.slice(0, context.pos);
-
-  const detectScope = (input: string): "root" | "sandbox" | "bind" => {
-    if (/"extraBindMounts"\s*:\s*\[[\s\S]*\{[^{}]*$/u.test(input)) {
-      return "bind";
-    }
-
-    if (/"sandboxPolicyExtensions"\s*:\s*\{[\s\S]*$/u.test(input)) {
-      return "sandbox";
-    }
-
-    return "root";
-  };
-
-  const detectValueKind = (input: string): "privilege" | "sys" | "dev" | "proc" | "bindMode" | "boolean" | null => {
-    if (/"defaultPrivilegeLevel"\s*:\s*$/u.test(input) || /"allowedPrivilegeLevels"\s*:\s*\[[^\]]*$/u.test(input)) {
-      return "privilege";
-    }
-
-    if (/"sysMode"\s*:\s*$/u.test(input)) {
-      return "sys";
-    }
-
-    if (/"devMode"\s*:\s*$/u.test(input)) {
-      return "dev";
-    }
-
-    if (/"procMode"\s*:\s*$/u.test(input)) {
-      return "proc";
-    }
-
-    if (/"mode"\s*:\s*$/u.test(input) && detectScope(input) === "bind") {
-      return "bindMode";
-    }
-
-    if (/"shareNetwork"\s*:\s*$/u.test(input)) {
-      return "boolean";
-    }
-
-    return null;
-  };
+  const isBooleanValueContext = /"(?:allowHostPrivileged|allowSandboxRw|defaultSandboxRw|hostDev|hostProc|hostSys|shareNetwork|unshareUser|unshareIpc|unsharePid|unshareUts|unshareCgroup)"\s*:\s*$/u.test(prefix);
 
   if (prefix.trim().length === 0) {
     return createPolicyCompletionResult(0, context.pos, [POLICY_TEMPLATE_COMPLETION, ...createPolicyKeyCompletions("root", false)]);
@@ -721,75 +759,26 @@ function policyCompletionSource(context: CompletionContext): CompletionResult | 
     const fragment = openStringMatch[0].slice(1);
     const beforeString = prefix.slice(0, prefix.length - openStringMatch[0].length);
     const from = context.pos - fragment.length;
-    const valueKind = detectValueKind(beforeString);
-
-    if (valueKind && valueKind !== "boolean") {
-      return createPolicyCompletionResult(from, context.pos, createPolicyValueCompletions(valueKind, true));
-    }
 
     if (/[{,]\s*$/u.test(beforeString)) {
-      return createPolicyCompletionResult(from, context.pos, createPolicyKeyCompletions(detectScope(beforeString), true));
+      return createPolicyCompletionResult(from, context.pos, createPolicyKeyCompletions("root", true));
     }
   }
 
   if (context.explicit && (/[{,]\s*$/u.test(prefix) || /\{\s*$/u.test(prefix))) {
-    return createPolicyCompletionResult(context.pos, context.pos, createPolicyKeyCompletions(detectScope(prefix), false));
+    return createPolicyCompletionResult(context.pos, context.pos, createPolicyKeyCompletions("root", false));
   }
 
-  const explicitValueKind = detectValueKind(prefix);
-  if (context.explicit && explicitValueKind) {
-    return createPolicyCompletionResult(context.pos, context.pos, createPolicyValueCompletions(explicitValueKind, false));
+  if (context.explicit && isBooleanValueContext) {
+    return createPolicyCompletionResult(context.pos, context.pos, createPolicyValueCompletions("boolean", false));
+  }
+
+  if (isBooleanValueContext) {
+    return createPolicyCompletionResult(context.pos, context.pos, createPolicyValueCompletions("boolean", false));
   }
 
   return null;
 }
-
-const POLICY_PRESETS: readonly PolicyPresetDefinition[] = [
-  {
-    id: "baseline",
-    title: "Baseline",
-    description: "Reset to the default bwrap sandbox: no /sys mount, sandbox /dev and /proc, shared network.",
-    patch: createDefaultSandboxPolicyExtensions(),
-  },
-  {
-    id: "sys-host-ro",
-    title: "Host /sys RO",
-    description: "Bind the host /sys tree read-only for hardware and interface inspection.",
-    patch: { sysMode: "host-ro" },
-  },
-  {
-    id: "sysfs",
-    title: "Fresh sysfs (feature-gated)",
-    description: "Use a fresh sysfs at /sys when the host bubblewrap supports it; older hosts fall back to host /sys read-only.",
-    patch: { sysMode: "sysfs" },
-  },
-  {
-    id: "kernel-introspection",
-    title: "Kernel Probe",
-    description: "Expose host /dev plus read-only /proc and /sys for tools that inspect kernel interfaces.",
-    patch: { devMode: "host", procMode: "host-ro", sysMode: "host-ro" },
-  },
-  {
-    id: "private-network",
-    title: "Private Net",
-    description: "Keep current mounts but stop sharing the host network namespace.",
-    patch: { shareNetwork: false },
-  },
-  {
-    id: "host-rw",
-    title: "Host RW",
-    description: "Expose writable host /proc and /sys with host /dev. High risk; use only on trusted boxes.",
-    patch: { devMode: "host", procMode: "host-rw", sysMode: "host-rw" },
-  },
-  {
-    id: "dbus-bridge",
-    title: "D-Bus Bridge",
-    description: "Add a read-only /run/dbus bind mount as a starting point for host bus access.",
-    patch: {
-      extraBindMounts: [{ mode: "ro-bind", source: "/run/dbus", target: "/run/dbus" }],
-    },
-  },
-];
 
 function createPresetDefinitions(supportedPackages: readonly RemoteSupportedPackageEntry[]): BoxPresetDefinition[] {
   const presets = supportedPackages.map((packageEntry) => ({
@@ -964,6 +953,9 @@ function PackageBoxModalOverview() {
   const isDefault = box.id === defaultPackageBoxId;
   const isDeleting = packageActionKind === "delete" && packageActionTarget === box.id;
   const isSelecting = packageActionKind === "select" && packageActionTarget === box.id;
+  const boxPolicy = extractBoxPolicy(box);
+  const defaultPrivilegeLevel = deriveDefaultPrivilegeLevel(boxPolicy);
+  const allowedPrivilegeLevels = deriveAllowedPrivilegeLevels(boxPolicy);
   const statusTone: "default" | "error" | "success" = box.status === "error"
     ? "error"
     : box.status === "ready"
@@ -1028,22 +1020,16 @@ function PackageBoxModalOverview() {
           {[
             { field: "Status", value: <StatusPill tone={statusTone} value={box.status} /> },
             { field: "Default", value: isDefault ? <StatusPill tone="success" value="default" /> : <span className="text-[#72727c]">No</span> },
-            { field: "Privilege default", value: <span className="text-[#d6d6db]">{formatPrivilegeLevel(box.defaultPrivilegeLevel)}</span> },
-            { field: "Allowed privileges", value: <span className="text-[#d6d6db]">{formatAllowedPrivilegeLevels(box.allowedPrivilegeLevels)}</span> },
+            { field: "Privilege default", value: <span className="text-[#d6d6db]">{formatPrivilegeLevel(defaultPrivilegeLevel)}</span> },
+            { field: "Allowed privileges", value: <span className="text-[#d6d6db]">{formatAllowedPrivilegeLevels(allowedPrivilegeLevels)}</span> },
+            { field: "Policy flags", value: <span className="break-words font-mono text-[10px] text-[#d6d6db]">{formatPolicyBooleanSummary(boxPolicy)}</span> },
             {
-              field: "Sandbox policy",
-              value: (
-                <div className="space-y-1">
-                  <p className="text-[#d6d6db]">{formatSandboxPolicySummary(box.sandboxPolicyExtensions)}</p>
-                  {box.sandboxPolicyExtensions.extraBindMounts.length > 0 ? (
-                    <div className="space-y-1 text-[10px] text-[#8b8b95]">
-                      {box.sandboxPolicyExtensions.extraBindMounts.map((entry, index) => (
-                        <p key={`${entry.source}-${entry.target}-${index}`}>{formatSandboxBindMount(entry)}</p>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ),
+              field: "Sandbox mounts",
+              value: <p className="text-[#d6d6db]">{formatSandboxPolicySummary(boxPolicy)}</p>,
+            },
+            {
+              field: "Namespaces",
+              value: <p className="text-[#d6d6db]">{formatNamespacePolicySummary(boxPolicy)}</p>,
             },
             { field: "Root", value: <span className="break-all font-mono text-[11px] text-[#d6d6db]">{box.rootPath}</span> },
             { field: "Created", value: <span className="text-[#d6d6db]">{formatTimestamp(box.createdAt)}</span> },
@@ -1111,7 +1097,7 @@ function PackageBoxModalPolicy() {
       return;
     }
 
-    setDraftSource(formatPolicyJson(box.defaultPrivilegeLevel, box.allowedPrivilegeLevels, box.sandboxPolicyExtensions));
+    setDraftSource(formatPolicyJson(extractBoxPolicy(box)));
   }, [box]);
 
   if (!box) {
@@ -1119,7 +1105,7 @@ function PackageBoxModalPolicy() {
   }
 
   const isPrivilegeSaving = packageActionKind === "privilege" && packageActionTarget === box.id;
-  const canonicalSource = formatPolicyJson(box.defaultPrivilegeLevel, box.allowedPrivilegeLevels, box.sandboxPolicyExtensions);
+  const canonicalSource = formatPolicyJson(extractBoxPolicy(box));
   const isDirty = draftSource.trim() !== canonicalSource.trim();
   const validation = useMemo(() => validatePolicySource(draftSource, packageHostInfo), [draftSource, packageHostInfo]);
   const validationErrors = validation.issues.filter((issue) => issue.severity === "error");
@@ -1136,23 +1122,9 @@ function PackageBoxModalPolicy() {
     setDraftSource(canonicalSource);
   };
 
-  const currentPolicyBase: PackageBoxPolicyDraft = validation.parsedPolicy ?? {
-    allowedPrivilegeLevels: [...box.allowedPrivilegeLevels],
-    defaultPrivilegeLevel: box.defaultPrivilegeLevel,
-    sandboxPolicyExtensions: cloneSandboxPolicyExtensions(box.sandboxPolicyExtensions),
-  };
-
-  const applyPreset = (preset: PolicyPresetDefinition) => {
-    const nextSandboxPolicy: RemotePackageSandboxPolicyExtensions = {
-      ...currentPolicyBase.sandboxPolicyExtensions,
-      ...preset.patch,
-      extraBindMounts: preset.patch.extraBindMounts
-        ? preset.patch.extraBindMounts.map((entry) => ({ ...entry }))
-        : currentPolicyBase.sandboxPolicyExtensions.extraBindMounts.map((entry) => ({ ...entry })),
-    };
-
-    setDraftSource(formatPolicyJson(currentPolicyBase.defaultPrivilegeLevel, currentPolicyBase.allowedPrivilegeLevels, nextSandboxPolicy));
-  };
+  const currentPolicyBase: PackageBoxPolicyDraft = validation.parsedPolicy ?? extractBoxPolicy(box);
+  const derivedAllowedPrivileges = deriveAllowedPrivilegeLevels(currentPolicyBase);
+  const derivedDefaultPrivilege = deriveDefaultPrivilegeLevel(currentPolicyBase);
 
   const saveDraft = async () => {
     if (!validation.parsedPolicy || validationErrors.length > 0) {
@@ -1168,27 +1140,11 @@ function PackageBoxModalPolicy() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[10px] uppercase tracking-[0.16em] text-[#68686e]">Policy</p>
-            <p className="mt-1 text-[11px] text-[#8b8b95]">Edit privilege levels plus bwrap mount and namespace extensions as JSON.</p>
+            <p className="mt-1 text-[11px] text-[#8b8b95]">Edit the flat box policy JSON. Every root key is boolean-only and maps directly to runtime bwrap behavior.</p>
           </div>
 
           {isPrivilegeSaving ? <StatusPill tone="default" value="saving" /> : null}
         </div>
-
-        <div className="mt-3 flex flex-wrap gap-2">
-          {POLICY_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => { applyPreset(preset); }}
-              className="rounded-[999px] border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-[10px] uppercase tracking-[0.14em] text-[#c8c8cf] transition hover:border-white/[0.16] hover:bg-white/[0.08] hover:text-white"
-              title={preset.description}
-            >
-              {preset.title}
-            </button>
-          ))}
-        </div>
-
-        <p className="mt-2 text-[10px] text-[#72727c]">Presets merge into the current sandbox policy. Review host paths before saving.</p>
 
         <div className="mt-3 overflow-hidden rounded-[10px] bg-black/20">
           <CodeMirror
@@ -1203,11 +1159,11 @@ function PackageBoxModalPolicy() {
 
         <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-2 text-[10px] text-[#72727c]">
-            <p>Required keys: <span className="font-mono text-[#d6d6db]">defaultPrivilegeLevel</span>, <span className="font-mono text-[#d6d6db]">allowedPrivilegeLevels</span>. Optional root key: <span className="font-mono text-[#d6d6db]">sandboxPolicyExtensions</span>.</p>
-            <p>Valid levels: <span className="font-mono text-[#d6d6db]">{PACKAGE_PRIVILEGE_LEVELS.join(", ")}</span>.</p>
-            <p>Sys modes: <span className="font-mono text-[#d6d6db]">{PACKAGE_SANDBOX_SYS_MODES.join(", ")}</span>. Dev modes: <span className="font-mono text-[#d6d6db]">{PACKAGE_SANDBOX_DEV_MODES.join(", ")}</span>. Proc modes: <span className="font-mono text-[#d6d6db]">{PACKAGE_SANDBOX_PROC_MODES.join(", ")}</span>.</p>
-            <p>Bind mount modes: <span className="font-mono text-[#d6d6db]">{PACKAGE_SANDBOX_BIND_MOUNT_MODES.join(", ")}</span>. Sandbox extensions apply to <span className="font-mono text-[#d6d6db]">sandbox-ro</span> and <span className="font-mono text-[#d6d6db]">sandbox-rw</span>; <span className="font-mono text-[#d6d6db]">host-privileged</span> still uses systemd-nspawn.</p>
-            <p>Current sandbox summary: <span className="text-[#d6d6db]">{formatSandboxPolicySummary(currentPolicyBase.sandboxPolicyExtensions)}</span>.</p>
+            <p>Keys: <span className="font-mono text-[#d6d6db]">{PACKAGE_POLICY_BOOLEAN_KEYS.join(", ")}</span>.</p>
+            <p>Privilege: default <span className="font-mono text-[#d6d6db]">{derivedDefaultPrivilege}</span> · allowed <span className="font-mono text-[#d6d6db]">{derivedAllowedPrivileges.join(", ")}</span>.</p>
+            <p>Mounts: <span className="text-[#d6d6db]">{formatSandboxPolicySummary(currentPolicyBase)}</span>.</p>
+            <p>Namespaces: <span className="text-[#d6d6db]">{formatNamespacePolicySummary(currentPolicyBase)}</span>.</p>
+            <p>Bwrap flags: <span className="break-all font-mono text-[#d6d6db]">{formatBwrapFlagSummary(currentPolicyBase, box.id)}</span>.</p>
             {validationErrors.length > 0 ? (
               <div className="space-y-1 rounded-[10px] bg-rose-400/8 px-3 py-2 text-rose-200">
                 {validationErrors.map((issue, index) => <p key={`policy-error-${index}`}>{issue.message}</p>)}

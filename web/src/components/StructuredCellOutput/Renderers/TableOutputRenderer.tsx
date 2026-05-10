@@ -1,6 +1,8 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { type PrimitiveTableEntity, type PrimitiveTableColumn } from "../types";
 import { formatPrimitiveValue, formatCopyCellValue, alignClassName } from "../utils";
+
+type TableRow = PrimitiveTableEntity["rows"][number];
 
 type ColumnSelection = {
   mode: "columns";
@@ -67,14 +69,21 @@ function formatTableSelectionCopyText(entity: PrimitiveTableEntity, selection: T
 export default function TableOutputRenderer({
   entity,
   onTableSelectionCopyTextChange,
+  selectedRowIndex,
+  onRowSelect,
+  onRowActivate,
 }: {
   entity: PrimitiveTableEntity;
   onTableSelectionCopyTextChange?: (tableId: string, text: string | null) => void;
+  selectedRowIndex?: number | null;
+  onRowSelect?: (rowIndex: number, row: TableRow) => void;
+  onRowActivate?: (rowIndex: number, row: TableRow) => void;
 }) {
   const dense = entity.presentation.dense ?? true;
   const cellPaddingClassName = dense ? "px-2 py-1" : "px-3 py-2";
   const [selection, setSelection] = useState<TableSelection | null>(null);
   const [dragSelection, setDragSelection] = useState<TableSelection | null>(null);
+  const isRowInteractive = typeof onRowSelect === "function" || typeof onRowActivate === "function";
 
   useEffect(() => {
     if (!dragSelection) {
@@ -201,9 +210,51 @@ export default function TableOutputRenderer({
     ].join(" ");
   };
 
+  const emitRowSelect = (rowIndex: number) => {
+    const row = entity.rows[rowIndex];
+    if (!row) {
+      return;
+    }
+
+    onRowSelect?.(rowIndex, row);
+  };
+
+  const emitRowActivate = (rowIndex: number) => {
+    const row = entity.rows[rowIndex];
+    if (!row) {
+      return;
+    }
+
+    onRowActivate?.(rowIndex, row);
+  };
+
+  const handleRowKeyDown = (event: ReactKeyboardEvent<HTMLTableRowElement>, rowIndex: number) => {
+    if (event.key === " ") {
+      event.preventDefault();
+      emitRowSelect(rowIndex);
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (onRowActivate) {
+        emitRowActivate(rowIndex);
+        return;
+      }
+
+      emitRowSelect(rowIndex);
+    }
+  };
+
+  const getRowClassName = (rowIndex: number): string => [
+    "transition-colors",
+    selectedRowIndex === rowIndex ? "bg-white/[0.08]" : rowIndex % 2 === 0 ? "bg-white/[0.012]" : "bg-transparent",
+    isRowInteractive ? "cursor-pointer outline-none hover:bg-white/[0.04] focus-visible:bg-white/[0.06]" : "",
+  ].join(" ");
+
   return (
     <div
-      className="overflow-x-auto rounded-[10px] bg-white/[0.02]"
+      className="dense-scroll overflow-x-auto rounded-[10px] bg-white/[0.02]"
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) {
           setSelection(null);
@@ -232,7 +283,15 @@ export default function TableOutputRenderer({
         </thead>
         <tbody>
           {entity.rows.length > 0 ? entity.rows.map((row, rowIndex) => (
-            <tr key={`${entity.id}:row:${rowIndex}`} className="odd:bg-white/[0.012] even:bg-transparent">
+            <tr
+              key={`${entity.id}:row:${rowIndex}`}
+              className={getRowClassName(rowIndex)}
+              onClick={isRowInteractive ? () => emitRowSelect(rowIndex) : undefined}
+              onDoubleClick={onRowActivate ? () => emitRowActivate(rowIndex) : undefined}
+              onKeyDown={isRowInteractive ? (event) => handleRowKeyDown(event, rowIndex) : undefined}
+              tabIndex={isRowInteractive ? 0 : undefined}
+              aria-selected={selectedRowIndex === rowIndex || undefined}
+            >
               {entity.columns.map((column, columnIndex) => (
                 <td
                   key={`${entity.id}:row:${rowIndex}:${column.key}`}

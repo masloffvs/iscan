@@ -3,12 +3,24 @@ import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
 import { launch, launchPersistentContext } from "cloakbrowser";
-import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { Browser, BrowserContext, Frame, Page, Response as PlaywrightResponse } from "playwright-core";
 import { Kit, type KitLifecycleContext } from "./kit";
-import { MicrolinkUaKit } from "./microlink-ua-kit";
+import { UaKit } from "./ua-kit";
 import { logger } from "../logger";
 
 export const CLOAK_KIT_ID = "cloak";
+
+const CLOAK_OPERATION_TIMEOUT_ERROR_PREFIX = "Cloak operation timeout:";
+
+function readPositiveTimeout(value: string | undefined, fallback: number): number {
+	const normalized = Number(value);
+	return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback;
+}
+
+const CLOAK_SCREENSHOT_TIMEOUT_MS = readPositiveTimeout(process.env.ISCAN_CLOAK_SCREENSHOT_TIMEOUT_MS, 5000);
+const CLOAK_PROFILE_OPERATION_TIMEOUT_MS = readPositiveTimeout(process.env.ISCAN_CLOAK_OPERATION_TIMEOUT_MS, 7000);
+const CLOAK_PROFILE_LAUNCH_TIMEOUT_MS = readPositiveTimeout(process.env.ISCAN_CLOAK_LAUNCH_TIMEOUT_MS, 45000);
+const CLOAK_PROFILE_CLEANUP_TIMEOUT_MS = readPositiveTimeout(process.env.ISCAN_CLOAK_CLEANUP_TIMEOUT_MS, 3000);
 
 const PROFILE_STARTUP_TAB_URLS = [
 	"https://www.startpage.com/",
@@ -58,6 +70,19 @@ function normalizePlaywrightKey(key: string, code?: string): string {
 	return key;
 }
 
+function getFallbackFaviconUrl(pageUrl: string): string | undefined {
+	try {
+		const parsedUrl = new URL(pageUrl);
+		if (!/^https?:$/u.test(parsedUrl.protocol)) {
+			return undefined;
+		}
+
+		return new URL("/favicon.ico", parsedUrl.origin).toString();
+	} catch {
+		return undefined;
+	}
+}
+
 export type CloakProfile = {
 	id: string;
 	name: string;
@@ -87,16 +112,30 @@ type CloakScreencastOptions = {
 	quality?: number;
 	everyNthFrame?: number;
 	onFrame: (frame: { mimeType: string; bytes: Uint8Array }) => Promise<void> | void;
-	onAudioChunk?: (chunk: { mimeType: string; bytes: Uint8Array }) => Promise<void> | void;
 };
 
 type CloakScreencastHandle = {
-	audioMimeType?: string;
 	stop: () => Promise<void>;
 };
 
-type CloakAudioCaptureHandle = {
-	mimeType: string;
+export type CloakProfileNetworkCapturedResponse = {
+	capturedAt: string;
+	pageId: string | null;
+	pageUrl: string | null;
+	requestUrl: string;
+	method: string;
+	resourceType: string;
+	status: number;
+	text: string | null;
+};
+
+export type CloakProfileNetworkCaptureOptions = {
+	includeBodyText?: boolean;
+	shouldCaptureResponse?: (response: PlaywrightResponse) => boolean | Promise<boolean>;
+	onResponse: (payload: CloakProfileNetworkCapturedResponse) => Promise<void> | void;
+};
+
+export type CloakProfileNetworkCaptureHandle = {
 	stop: () => Promise<void>;
 };
 
@@ -104,6 +143,7 @@ export type CloakProfileTab = {
 	id: string;
 	url: string;
 	title?: string;
+	faviconUrl?: string;
 	active: boolean;
 };
 
@@ -147,14 +187,37 @@ function shouldCopyProfileEntry(sourcePath: string): boolean {
 	return true;
 }
 
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+	try {
+		return await Promise.race([
+			operation,
+			new Promise<never>((_resolve, reject) => {
+				timeoutId = setTimeout(() => {
+					reject(new Error(`${CLOAK_OPERATION_TIMEOUT_ERROR_PREFIX} ${label} timed out after ${timeoutMs}ms`));
+				}, timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timeoutId !== undefined) {
+			clearTimeout(timeoutId);
+		}
+	}
+}
+
 import { ExtensionDownloader, type CloakExtension } from "../cloak-extensions/extension-downloader";
 import { PasswordAssistantExtension } from "../cloak-extensions/password-assistant";
 import { TempMailAssistantExtension } from "../cloak-extensions/temp-mail-assistant";
 import { WebStoreIntegrator } from "../cloak-extensions/web-store-integrator";
 
+type CloakSession = Browser | BrowserContext;
+
 export class CloakKit extends Kit {
 	private profiles: CloakProfile[] = [];
-	private activeSessions: Map<string, Browser | BrowserContext> = new Map();
+	private activeSessions: Map<string, CloakSession> = new Map();
+	private activeScreencasts: Map<string, CloakScreencastHandle> = new Map();
+	private activeScreenshots: Map<string, Promise<string | null>> = new Map();
 	private activePageIds: Map<string, string> = new Map();
 	private pageIds: WeakMap<Page, string> = new WeakMap();
 	private trackedContexts: WeakSet<BrowserContext> = new WeakSet();
@@ -189,9 +252,13 @@ export class CloakKit extends Kit {
 	}
 
 	protected override async onStop(_context: KitLifecycleContext): Promise<void> {
+		const screencastStops = Array.from(this.activeScreencasts.values()).map((handle) => handle.stop().catch(() => {}));
+		await Promise.all(screencastStops);
+		this.activeScreencasts.clear();
 		const closes = Array.from(this.activeSessions.values()).map(s => s.close().catch(() => {}));
 		await Promise.all(closes);
 		this.activeSessions.clear();
+		this.activeScreenshots.clear();
 		this.activePageIds.clear();
 		this.pageCounters.clear();
 	}
@@ -236,6 +303,88 @@ export class CloakKit extends Kit {
 		if (!userDataDir) return undefined;
 		if (path.isAbsolute(userDataDir)) return userDataDir;
 		return path.join(process.cwd(), "data", userDataDir);
+	}
+
+	private isSessionConnected(session: CloakSession): boolean {
+		if ("isConnected" in session && typeof session.isConnected === "function") {
+			try {
+				return session.isConnected();
+			} catch {
+				return false;
+			}
+		}
+
+		const context = session as BrowserContext;
+		try {
+			const owner = typeof context.browser === "function" ? context.browser() : null;
+			if (owner && typeof owner.isConnected === "function" && !owner.isConnected()) {
+				return false;
+			}
+
+			context.pages();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private shouldResetTrackedSession(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return message.includes(CLOAK_OPERATION_TIMEOUT_ERROR_PREFIX)
+			|| /Target (?:page|context|browser) has been closed|Target closed|Session closed|Connection closed|Browser has been closed|browser has disconnected/iu.test(message);
+	}
+
+	private async cleanupProfileSession(profile: CloakProfile, reason: string, session: CloakSession | null = null): Promise<void> {
+		const trackedSession = session ?? this.activeSessions.get(profile.id) ?? null;
+		const screencast = this.activeScreencasts.get(profile.id);
+
+		this.activeSessions.delete(profile.id);
+		this.activeScreencasts.delete(profile.id);
+		this.activeScreenshots.delete(profile.id);
+		this.activePageIds.delete(profile.id);
+		this.pageCounters.delete(profile.id);
+
+		await this.logToProfile(profile, `Resetting tracked session after ${reason}.`);
+
+		if (screencast) {
+			await withTimeout(
+				screencast.stop().catch(() => {}),
+				CLOAK_PROFILE_CLEANUP_TIMEOUT_MS,
+				`stop screencast for ${profile.name} during ${reason}`,
+			).catch(() => {});
+		}
+
+		if (trackedSession) {
+			await withTimeout(
+				trackedSession.close().catch(() => {}),
+				CLOAK_PROFILE_CLEANUP_TIMEOUT_MS,
+				`close session for ${profile.name} during ${reason}`,
+			).catch(() => {});
+		}
+	}
+
+	private async runBoundedProfileOperation<T>(
+		target: string,
+		operationLabel: string,
+		operation: (profile: CloakProfile) => Promise<T>,
+		options: { cleanupSession?: boolean; session?: CloakSession | null; timeoutMs?: number } = {},
+	): Promise<T> {
+		const profile = this.resolveProfile(target);
+
+		try {
+			return await withTimeout(
+				operation(profile),
+				options.timeoutMs ?? CLOAK_PROFILE_OPERATION_TIMEOUT_MS,
+				`${operationLabel} for ${profile.name}`,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await this.logToProfile(profile, `${operationLabel} failed: ${message}`);
+			if ((options.cleanupSession ?? true) && this.shouldResetTrackedSession(error)) {
+				await this.cleanupProfileSession(profile, `${operationLabel} failure`, options.session ?? null);
+			}
+			throw error;
+		}
 	}
 
 	private getOrAssignPageId(profileId: string, page: Page): string {
@@ -340,29 +489,58 @@ export class CloakKit extends Kit {
 		const resolvedActivePageId = activePageId ?? this.getOrAssignPageId(profile.id, pages[0]!);
 		this.activePageIds.set(profile.id, resolvedActivePageId);
 
-		return await Promise.all(pages.map(async (page) => {
+		return pages.map((page) => {
 			const pageId = this.trackPage(profile.id, page);
-			const title = await page.title().catch(() => "");
+			const pageUrl = page.url();
 			return {
 				id: pageId,
-				url: page.url(),
-				title: title || undefined,
+				url: pageUrl,
+				faviconUrl: getFallbackFaviconUrl(pageUrl),
 				active: pageId === resolvedActivePageId,
 			};
-		}));
+		});
 	}
 
 	async activateProfileTab(target: string, tabId: string): Promise<void> {
-		const profile = this.resolveProfile(target);
-		const context = await this.resolveBrowserContext(profile.id);
-		this.ensureContextTracking(profile.id, context);
-		const page = context.pages().find((candidate) => this.getOrAssignPageId(profile.id, candidate) === tabId);
-		if (!page) {
-			throw new Error(`Browser tab ${tabId} was not found for profile ${profile.name}.`);
-		}
+		await this.runBoundedProfileOperation(target, "activate browser tab", async (profile) => {
+			const context = await this.resolveBrowserContext(profile.id);
+			this.ensureContextTracking(profile.id, context);
+			const page = context.pages().find((candidate) => this.getOrAssignPageId(profile.id, candidate) === tabId);
+			if (!page) {
+				throw new Error(`Browser tab ${tabId} was not found for profile ${profile.name}.`);
+			}
 
-		this.activePageIds.set(profile.id, tabId);
-		await page.bringToFront().catch(() => {});
+			this.activePageIds.set(profile.id, tabId);
+			await page.bringToFront().catch(() => {});
+		});
+	}
+
+	async closeProfileTab(target: string, tabId: string): Promise<void> {
+		await this.runBoundedProfileOperation(target, "close browser tab", async (profile) => {
+			const context = await this.resolveBrowserContext(profile.id);
+			this.ensureContextTracking(profile.id, context);
+			const page = context.pages().find((candidate) => this.getOrAssignPageId(profile.id, candidate) === tabId);
+			if (!page) {
+				throw new Error(`Browser tab ${tabId} was not found for profile ${profile.name}.`);
+			}
+
+			const wasActive = this.activePageIds.get(profile.id) === tabId;
+			await page.close().catch(() => {});
+
+			if (!wasActive) {
+				return;
+			}
+
+			const remainingPages = context.pages();
+			if (remainingPages.length === 0) {
+				this.activePageIds.delete(profile.id);
+				return;
+			}
+
+			const nextActivePageId = this.getOrAssignPageId(profile.id, remainingPages[0]!);
+			this.activePageIds.set(profile.id, nextActivePageId);
+			await remainingPages[0]!.bringToFront().catch(() => {});
+		});
 	}
 
 	async getChromiumVersion(): Promise<string> {
@@ -385,8 +563,10 @@ export class CloakKit extends Kit {
 	}
 
 	async fetchUserAgents(): Promise<string[]> {
-		const userAgentKit = new MicrolinkUaKit();
-		const userAgents = await userAgentKit.listUserAgents();
+		const userAgentKit = new UaKit();
+		const userAgents = [...new Set(
+			(await userAgentKit.listExactAgents({ categories: ["user"] })).map((record) => record.userAgent),
+		)];
 		if (userAgents.length > 0) {
 			return userAgents;
 		}
@@ -539,10 +719,14 @@ export class CloakKit extends Kit {
 		return cloneDir;
 	}
 
-	async launchProfile(target: string, options: CloakLaunchProfileOptions = {}): Promise<Browser | BrowserContext> {
+	async launchProfile(target: string, options: CloakLaunchProfileOptions = {}): Promise<CloakSession> {
 		const profile = this.resolveProfile(target);
 		const profileId = profile.id;
 		const trackSession = options.trackSession !== false;
+		const existingSession = this.getRunningSession(profileId);
+		if (existingSession) {
+			return existingSession;
+		}
 
 		// DEBUG LOG
 		try {
@@ -765,6 +949,17 @@ export class CloakKit extends Kit {
 
 		const configuredHeadless = (profile.extensions && profile.extensions.length > 0) ? false : (profile.headless ?? false);
 		const effectiveHeadless = options.headless ?? configuredHeadless;
+		const sharedPulseSink = process.env.ISCAN_CLOAK_PULSE_SINK?.trim();
+		const sharedPulseServer = process.env.ISCAN_CLOAK_PULSE_SERVER?.trim();
+		const sharedPipewireLatency = process.env.ISCAN_CLOAK_PIPEWIRE_LATENCY?.trim();
+		const sharedAudioLaunchEnv = (sharedPulseSink || sharedPulseServer || sharedPipewireLatency)
+			? {
+				...process.env,
+				...(sharedPulseSink ? { PULSE_SINK: sharedPulseSink } : {}),
+				...(sharedPulseServer ? { PULSE_SERVER: sharedPulseServer } : {}),
+				...(sharedPipewireLatency ? { PIPEWIRE_LATENCY: sharedPipewireLatency } : {}),
+			}
+			: undefined;
 
 		const baseOptions: any = {
 			headless: effectiveHeadless,
@@ -773,6 +968,7 @@ export class CloakKit extends Kit {
 			timezoneId: profile.timezone,
 			locale: profile.locale,
 			humanize: profile.humanize,
+			...(sharedAudioLaunchEnv ? { launchOptions: { env: sharedAudioLaunchEnv } } : {}),
 			geoip: true, // Enable GeoIP detection as requested
 		};
 
@@ -806,7 +1002,7 @@ export class CloakKit extends Kit {
 			}
 		}
 
-		let session: Browser | BrowserContext;
+		let session: CloakSession | null = null;
 
 		const defaultUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
 		const userAgent = profile.userAgent || defaultUA;
@@ -815,114 +1011,142 @@ export class CloakKit extends Kit {
 		const uaVersionMatch = userAgent.match(/Chrome\/(\d+)\./);
 		const majorVersionToUse = uaVersionMatch ? uaVersionMatch[1] : chromeVersion.split(".")[0];
 
-		if (actualUserDataDir) {
-			session = await launchPersistentContext({
-				...baseOptions,
-				userDataDir: actualUserDataDir,
-				userAgent: userAgent,
-				locale: profile.locale || "en-US",
-				viewport: profile.viewportWidth && profile.viewportHeight ? {
-					width: profile.viewportWidth,
-					height: profile.viewportHeight
-				} : null,
-				extraHTTPHeaders: {
-					"sec-ch-ua": `\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"${majorVersionToUse}\", \"Chromium\";v=\"${majorVersionToUse}\"`,
-					"sec-ch-ua-mobile": "?0",
-					"sec-ch-ua-platform": "\"Windows\""
-				}
-			});
-		} else {
-			session = await launch(baseOptions);
-		}
-
-		if (trackSession) {
-			this.activeSessions.set(profileId, session);
-		}
-		if (trackSession && actualUserDataDir) {
-			this.ensureContextTracking(profileId, session as BrowserContext);
-		}
-
-		// DEBUG LOG
 		try {
-			fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Session for ${profile.name} ready. userDataDir: ${!!actualUserDataDir}\n`);
-		} catch {}
+			session = await withTimeout((async () => {
+				const createdSession = actualUserDataDir
+					? await launchPersistentContext({
+						...baseOptions,
+						userDataDir: actualUserDataDir,
+						userAgent: userAgent,
+						locale: profile.locale || "en-US",
+						viewport: profile.viewportWidth && profile.viewportHeight ? {
+							width: profile.viewportWidth,
+							height: profile.viewportHeight
+						} : null,
+						extraHTTPHeaders: {
+							"sec-ch-ua": `\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"${majorVersionToUse}\", \"Chromium\";v=\"${majorVersionToUse}\"`,
+							"sec-ch-ua-mobile": "?0",
+							"sec-ch-ua-platform": "\"Windows\""
+						}
+					})
+					: await launch(baseOptions);
+				session = createdSession;
 
-		// Block localhost and private network scanning
-		if (actualUserDataDir) {
-			const context = session as BrowserContext;
-			
-			try {
-				fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Initializing plugins for persistent context...\n`);
-			} catch {}
-
-			await context.route("**/*", (route) => {
-				const url = route.request().url().toLowerCase();
-				if (
-					url.includes("127.0.0.1") || 
-					url.includes("localhost") || 
-					url.includes("::1") ||
-					url.includes("0.0.0.0")
-				) {
-					return route.abort("blockedbyclient");
-				}
-				return route.continue();
-			});
-
-			// Run launch extensions for persistent context
-			for (const ext of this.cloakExtensions) {
-				try {
-					if (ext.onProfileLaunch) {
-						await ext.onProfileLaunch(context, profile, this);
-						fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Plugin ${ext.id} ok.\n`);
+				const cleanup = () => {
+					if (trackSession) {
+						const screencast = this.activeScreencasts.get(profileId);
+						this.activeSessions.delete(profileId);
+						this.activeScreencasts.delete(profileId);
+						this.activeScreenshots.delete(profileId);
+						this.activePageIds.delete(profileId);
+						this.pageCounters.delete(profileId);
+						if (screencast) {
+							void screencast.stop().catch(() => {});
+						}
 					}
-				} catch (err) {
-					fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Plugin ${ext.id} ERROR: ${(err as Error).message}\n`);
+					if (cleanupUserDataDirOnClose && actualUserDataDir) {
+						fs.rm(actualUserDataDir, { recursive: true, force: true }).catch(() => {});
+					}
+				};
+
+				if (actualUserDataDir) {
+					(createdSession as BrowserContext).on("close", cleanup);
+				} else {
+					(createdSession as Browser).on("disconnected", cleanup);
 				}
-			}
 
-			await this.ensureStartupTabsOpen(context, profile);
-		}
-		
-		const cleanup = () => {
-			if (trackSession) {
-				this.activeSessions.delete(profileId);
-				this.activePageIds.delete(profileId);
-				this.pageCounters.delete(profileId);
-			}
-			if (cleanupUserDataDirOnClose && actualUserDataDir) {
-				fs.rm(actualUserDataDir, { recursive: true, force: true }).catch(() => {});
-			}
-		};
+				// Block localhost and private network scanning
+				if (actualUserDataDir) {
+					const context = createdSession as BrowserContext;
 
-		if (actualUserDataDir) {
-			(session as BrowserContext).on("close", cleanup);
-		} else {
-			(session as Browser).on("disconnected", cleanup);
-		}
+					try {
+						fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Initializing plugins for persistent context...\n`);
+					} catch {}
 
-		// For non-persistent browser, we still need to set UA/Viewport on pages
-		if (!actualUserDataDir && (profile.userAgent || (profile.viewportWidth && profile.viewportHeight))) {
-			const browser = session as Browser;
-			const context = await browser.newContext({
-				userAgent: profile.userAgent,
-				viewport: profile.viewportWidth && profile.viewportHeight ? {
-					width: profile.viewportWidth,
-					height: profile.viewportHeight
-				} : null,
-			});
-			await context.newPage();
+					await context.route("**/*", (route) => {
+						const url = route.request().url().toLowerCase();
+						if (
+							url.includes("127.0.0.1") || 
+							url.includes("localhost") || 
+							url.includes("::1") ||
+							url.includes("0.0.0.0")
+						) {
+							return route.abort("blockedbyclient");
+						}
+						return route.continue();
+					});
+
+					// Run launch extensions for persistent context
+					for (const ext of this.cloakExtensions) {
+						try {
+							if (ext.onProfileLaunch) {
+								await ext.onProfileLaunch(context, profile, this);
+								fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Plugin ${ext.id} ok.\n`);
+							}
+						} catch (err) {
+							fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Plugin ${ext.id} ERROR: ${(err as Error).message}\n`);
+						}
+					}
+
+					await this.ensureStartupTabsOpen(context, profile);
+				}
+
+				// For non-persistent browser, we still need to set UA/Viewport on pages
+				if (!actualUserDataDir && (profile.userAgent || (profile.viewportWidth && profile.viewportHeight))) {
+					const browser = createdSession as Browser;
+					const context = await browser.newContext({
+						userAgent: profile.userAgent,
+						viewport: profile.viewportWidth && profile.viewportHeight ? {
+							width: profile.viewportWidth,
+							height: profile.viewportHeight
+						} : null,
+					});
+					await context.newPage();
+				}
+
+				// DEBUG LOG
+				try {
+					fsSync.appendFileSync(path.join(process.cwd(), "cloak-master.log"), `[${new Date().toISOString()}] Session for ${profile.name} ready. userDataDir: ${!!actualUserDataDir}\n`);
+				} catch {}
+
+				if (trackSession) {
+					this.activeSessions.set(profileId, createdSession);
+					if (actualUserDataDir) {
+						this.ensureContextTracking(profileId, createdSession as BrowserContext);
+					}
+				}
+
+				return createdSession;
+			})(), CLOAK_PROFILE_LAUNCH_TIMEOUT_MS, `launch profile ${profile.name}`);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await this.logToProfile(profile, `Launch failed: ${message}`);
+			if (session) {
+				await this.cleanupProfileSession(profile, "launch failure", session);
+			}
+			throw error;
 		}
 
 		return session;
 	}
 
-	getRunningSession(target: string): Browser | BrowserContext | null {
+	getRunningSession(target: string): CloakSession | null {
 		const profile = this.resolveProfileOrNull(target);
 		if (!profile) {
 			return null;
 		}
 
-		return this.activeSessions.get(profile.id) ?? null;
+		const session = this.activeSessions.get(profile.id) ?? null;
+		if (!session) {
+			return null;
+		}
+
+		if (this.isSessionConnected(session)) {
+			return session;
+		}
+
+		void this.cleanupProfileSession(profile, "stale disconnected session detected", session);
+		return null;
 	}
 
 	isProfileRunning(target: string): boolean {
@@ -931,22 +1155,12 @@ export class CloakKit extends Kit {
 			return false;
 		}
 
-		return this.activeSessions.has(profile.id);
+		return this.getRunningSession(profile.id) !== null;
 	}
 
 	async stopProfile(target: string): Promise<void> {
 		const profile = this.resolveProfile(target);
-		const session = this.activeSessions.get(profile.id);
-		if (!session) {
-			return;
-		}
-
-		this.activeSessions.delete(profile.id);
-		try {
-			await session.close();
-		} catch {
-			// Ignore cleanup errors.
-		}
+		await this.cleanupProfileSession(profile, "stop request");
 	}
 
 	async getProfileCookies(target: string, options: GetProfileCookiesOptions = {}): Promise<CloakProfileCookie[]> {
@@ -1000,21 +1214,23 @@ export class CloakKit extends Kit {
 
 		const browser = session as Browser;
 		const contexts = browser.contexts();
-		return contexts.length > 0 ? contexts[0] : await browser.newContext();
+		return contexts[0] ?? await browser.newContext();
 	}
 
 	async navigateProfile(target: string, url: string): Promise<void> {
-		const { profile, page } = await this.resolveActivePage(target, { createIfMissing: true, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
+		await this.runBoundedProfileOperation(target, "navigate profile", async () => {
+			const { profile, page } = await this.resolveActivePage(target, { createIfMissing: true, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
 
-		try {
-			await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-		} catch (error) {
-			await this.logToProfile(profile, `Navigation failed: ${(error as Error).message}`);
-			throw error;
-		}
+			try {
+				await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+			} catch (error) {
+				await this.logToProfile(profile, `Navigation failed: ${(error as Error).message}`);
+				throw error;
+			}
+		}, { timeoutMs: Math.max(CLOAK_PROFILE_OPERATION_TIMEOUT_MS, 31000), cleanupSession: false });
 	}
 
 	getProfileCurrentUrl(target: string): string | null {
@@ -1023,7 +1239,7 @@ export class CloakKit extends Kit {
 			return null;
 		}
 
-		const session = this.activeSessions.get(profile.id);
+		const session = this.getRunningSession(profile.id);
 		if (!session) {
 			return null;
 		}
@@ -1045,387 +1261,282 @@ export class CloakKit extends Kit {
 	}
 
 	async captureProfileScreenshot(target: string): Promise<string | null> {
-		const session = this.getRunningSession(target);
-		if (!session) {
-			return null;
-		}
+		return await this.runBoundedProfileOperation(target, "capture screenshot", async (profile) => {
+			const existingScreenshot = this.activeScreenshots.get(profile.id);
+			if (existingScreenshot) {
+				return await existingScreenshot;
+			}
 
-		const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			return null;
-		}
+			const screenshotTask = (async () => {
+				const session = this.getRunningSession(target);
+				if (!session) {
+					return null;
+				}
 
-		const screenshot = await page.screenshot({
-			type: "jpeg",
-			quality: 55,
-			animations: "disabled",
-			scale: "css",
-		});
+				const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+				if (!page) {
+					return null;
+				}
 
-		return `data:image/jpeg;base64,${Buffer.from(screenshot).toString("base64")}`;
+				const screenshot = await page.screenshot({
+					type: "jpeg",
+					quality: 55,
+					animations: "disabled",
+					scale: "css",
+					timeout: CLOAK_SCREENSHOT_TIMEOUT_MS,
+				});
+
+				return `data:image/jpeg;base64,${Buffer.from(screenshot).toString("base64")}`;
+			})();
+
+			this.activeScreenshots.set(profile.id, screenshotTask);
+			try {
+				return await screenshotTask;
+			} finally {
+				if (this.activeScreenshots.get(profile.id) === screenshotTask) {
+					this.activeScreenshots.delete(profile.id);
+				}
+			}
+		}, { timeoutMs: Math.max(CLOAK_PROFILE_OPERATION_TIMEOUT_MS, CLOAK_SCREENSHOT_TIMEOUT_MS + 1000) });
 	}
 
-	private async startPageAudioCapture(
-		page: Page,
-		onChunk: (chunk: { mimeType: string; bytes: Uint8Array }) => Promise<void> | void,
-	): Promise<CloakAudioCaptureHandle | null> {
-		const sessionId = crypto.randomUUID();
-		const bindingName = `__iscanEmitAudioChunk_${sessionId.replace(/-/g, "_")}`;
-		const preferredMimeTypes = [
-			"audio/webm;codecs=opus",
-			"audio/webm",
-			"audio/mp4",
-		] as const;
+	async startProfileNetworkCapture(
+		target: string,
+		options: CloakProfileNetworkCaptureOptions,
+	): Promise<CloakProfileNetworkCaptureHandle> {
+		const profile = this.resolveProfile(target);
+		const context = await this.resolveBrowserContext(profile.id);
+		this.ensureContextTracking(profile.id, context);
+
 		let stopped = false;
+		const pending = new Set<Promise<void>>();
 
-		await page.exposeBinding(bindingName, async (_source, payload: unknown) => {
-			if (stopped || !payload || typeof payload !== "object") {
-				return;
-			}
+		const handleResponse = (response: PlaywrightResponse) => {
+			const task = (async () => {
+				if (stopped) {
+					return;
+				}
 
-			const candidate = payload as {
-				sessionId?: string;
-				mimeType?: string;
-				base64?: string;
-			};
-			if (candidate.sessionId !== sessionId || typeof candidate.base64 !== "string") {
-				return;
-			}
+				if (options.shouldCaptureResponse) {
+					const shouldCapture = await options.shouldCaptureResponse(response);
+					if (!shouldCapture || stopped) {
+						return;
+					}
+				}
 
-			const mimeType = typeof candidate.mimeType === "string" && candidate.mimeType.length > 0
-				? candidate.mimeType
-				: "audio/webm";
-			await onChunk({
-				mimeType,
-				bytes: Uint8Array.from(Buffer.from(candidate.base64, "base64")),
+				let pageId: string | null = null;
+				let pageUrl: string | null = null;
+				try {
+					const page = response.request().frame().page();
+					pageId = this.trackPage(profile.id, page);
+					pageUrl = page.url() || null;
+				} catch {
+					pageId = null;
+					pageUrl = null;
+				}
+
+				const payload: CloakProfileNetworkCapturedResponse = {
+					capturedAt: new Date().toISOString(),
+					pageId,
+					pageUrl,
+					requestUrl: response.url(),
+					method: response.request().method(),
+					resourceType: response.request().resourceType(),
+					status: response.status(),
+					text: options.includeBodyText ? await response.text().catch(() => null) : null,
+				};
+
+				await options.onResponse(payload);
+			})();
+
+			pending.add(task);
+			void task.finally(() => {
+				pending.delete(task);
 			});
-		});
-
-		const bootstrapCapture = async (): Promise<string | null> => {
-			const result = await page.evaluate(
-				({ audioBitsPerSecond, bindingName, preferredMimeTypes, recorderTimesliceMs, sessionId }) => {
-					const scope = globalThis as typeof globalThis & {
-						[key: string]: unknown;
-						__iscanAudioCaptureState?: {
-							sessionId: string;
-							stopCurrent: () => void;
-						};
-					};
-
-					if (typeof MediaRecorder === "undefined" || typeof AudioContext === "undefined") {
-						return { mimeType: null };
-					}
-
-					const selectedMimeType = preferredMimeTypes.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? null;
-					if (!selectedMimeType) {
-						return { mimeType: null };
-					}
-
-					scope.__iscanAudioCaptureState?.stopCurrent();
-
-					const audioContext = new AudioContext();
-					const destination = audioContext.createMediaStreamDestination();
-					const attachedElements = new WeakSet<HTMLMediaElement>();
-					const cleanupCallbacks: Array<() => void> = [];
-					let recorder: MediaRecorder | null = null;
-					let attachedSourceCount = 0;
-
-					const encodeBase64 = (bytes: Uint8Array): string => {
-						let binary = "";
-						const chunkSize = 0x8000;
-						for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-							const chunk = bytes.subarray(offset, offset + chunkSize);
-							binary += String.fromCharCode(...chunk);
-						}
-
-						return btoa(binary);
-					};
-
-					const startRecorderIfNeeded = () => {
-						if (recorder || attachedSourceCount === 0) {
-							return;
-						}
-
-						recorder = new MediaRecorder(destination.stream, {
-							audioBitsPerSecond,
-							mimeType: selectedMimeType,
-						});
-						recorder.ondataavailable = async (event) => {
-							if (!event.data || event.data.size === 0) {
-								return;
-							}
-
-							const chunk = new Uint8Array(await event.data.arrayBuffer());
-							const emitChunk = scope[bindingName];
-							if (typeof emitChunk !== "function") {
-								return;
-							}
-
-							await emitChunk({
-								base64: encodeBase64(chunk),
-								mimeType: recorder?.mimeType || selectedMimeType,
-								sessionId,
-							});
-						};
-						recorder.start(recorderTimesliceMs);
-					};
-
-					const attachElement = (element: HTMLMediaElement) => {
-						if (attachedElements.has(element)) {
-							return;
-						}
-
-						const captureMethod = element.captureStream ?? (element as HTMLMediaElement & {
-							mozCaptureStream?: () => MediaStream;
-						}).mozCaptureStream;
-						if (typeof captureMethod !== "function") {
-							return;
-						}
-
-						try {
-							const stream = captureMethod.call(element);
-							const source = audioContext.createMediaStreamSource(stream);
-							const gain = audioContext.createGain();
-							gain.gain.value = 1;
-							source.connect(gain);
-							gain.connect(destination);
-							attachedElements.add(element);
-							attachedSourceCount += 1;
-							cleanupCallbacks.push(() => {
-								attachedSourceCount = Math.max(0, attachedSourceCount - 1);
-								source.disconnect();
-								gain.disconnect();
-							});
-							startRecorderIfNeeded();
-						} catch {
-							// Ignore elements that cannot be tapped into the mixed audio bus.
-						}
-					};
-
-					const attachNode = (node: Node) => {
-						if (node instanceof HTMLMediaElement) {
-							attachElement(node);
-						}
-						if (node instanceof Element) {
-							node.querySelectorAll("audio, video").forEach((element) => {
-								if (element instanceof HTMLMediaElement) {
-									attachElement(element);
-								}
-							});
-						}
-					};
-
-					const handlePlay = (event: Event) => {
-						if (event.target instanceof HTMLMediaElement) {
-							attachElement(event.target);
-							void audioContext.resume().catch(() => {});
-						}
-					};
-
-					document.addEventListener("play", handlePlay, true);
-					const observer = new MutationObserver((records) => {
-						for (const record of records) {
-							for (const node of record.addedNodes) {
-								attachNode(node);
-							}
-						}
-					});
-					if (document.documentElement) {
-						observer.observe(document.documentElement, { childList: true, subtree: true });
-					}
-
-					document.querySelectorAll("audio, video").forEach((element) => {
-						if (element instanceof HTMLMediaElement) {
-							attachElement(element);
-						}
-					});
-					void audioContext.resume().catch(() => {});
-
-					scope.__iscanAudioCaptureState = {
-						sessionId,
-						stopCurrent: () => {
-							document.removeEventListener("play", handlePlay, true);
-							observer.disconnect();
-							if (recorder && recorder.state !== "inactive") {
-								recorder.stop();
-							}
-							for (const cleanup of cleanupCallbacks.splice(0).reverse()) {
-								cleanup();
-							}
-							void audioContext.close().catch(() => {});
-							if (scope.__iscanAudioCaptureState?.sessionId === sessionId) {
-								delete scope.__iscanAudioCaptureState;
-							}
-						},
-					};
-
-					return { mimeType: selectedMimeType };
-				},
-				{
-					audioBitsPerSecond: 128_000,
-					bindingName,
-					preferredMimeTypes,
-					recorderTimesliceMs: 250,
-					sessionId,
-				},
-			);
-
-			return result?.mimeType ?? null;
 		};
 
-		const mimeType = await bootstrapCapture();
-		if (!mimeType) {
-			return null;
-		}
-
-		const handleFrameNavigated = (frame: Parameters<Page["on"]>[1] extends (arg: infer T) => unknown ? T : unknown) => {
-			if (stopped || frame !== page.mainFrame()) {
-				return;
-			}
-
-			void bootstrapCapture().catch(() => {});
-		};
-		page.on("framenavigated", handleFrameNavigated as (frame: unknown) => void);
+		context.on("response", handleResponse as (response: unknown) => void);
 
 		return {
-			mimeType,
 			stop: async () => {
 				if (stopped) {
 					return;
 				}
 
 				stopped = true;
-				page.off("framenavigated", handleFrameNavigated as (frame: unknown) => void);
-				await page.evaluate(({ sessionId }) => {
-					const scope = globalThis as typeof globalThis & {
-						__iscanAudioCaptureState?: {
-							sessionId: string;
-							stopCurrent: () => void;
-						};
-					};
-
-					if (scope.__iscanAudioCaptureState?.sessionId === sessionId) {
-						scope.__iscanAudioCaptureState.stopCurrent();
-					}
-				}, { sessionId }).catch(() => {});
+				context.off("response", handleResponse as (response: unknown) => void);
+				await Promise.allSettled(Array.from(pending));
 			},
 		};
 	}
 
 	async startProfileScreencast(target: string, options: CloakScreencastOptions): Promise<CloakScreencastHandle> {
-		const { context, page, profile } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
-
-		const cdpFactory = context as BrowserContext & {
-			newCDPSession?: (page: Page) => Promise<{
-				on: (eventName: string, listener: (payload: any) => Promise<void> | void) => void;
-				off?: (eventName: string, listener: (payload: any) => Promise<void> | void) => void;
-				send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-				detach?: () => Promise<void>;
-			}>;
-		};
-		if (typeof cdpFactory.newCDPSession !== "function") {
-			throw new Error("Browser screencast requires Chromium CDP support.");
-		}
-
-		await page.bringToFront().catch(() => {});
-		const client = await cdpFactory.newCDPSession(page);
-		const format = options.format ?? "jpeg";
-		let audioCaptureHandle: CloakAudioCaptureHandle | null = null;
-		if (options.onAudioChunk) {
-			try {
-				audioCaptureHandle = await this.startPageAudioCapture(page, options.onAudioChunk);
-			} catch (error) {
-				await this.logToProfile(profile, `Audio capture unavailable: ${(error as Error).message}`);
-			}
-		}
-		let stopped = false;
-
-		const handleFrame = async (frameObject: { data: string; sessionId: number }) => {
-			if (stopped) {
-				return;
+		return await this.runBoundedProfileOperation(target, "start screencast", async (profile) => {
+			const { context, page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
 			}
 
-			try {
-				await options.onFrame({
-					mimeType: `image/${format}`,
-					bytes: Uint8Array.from(Buffer.from(frameObject.data, "base64")),
-				});
-			} finally {
-				if (!stopped) {
-					await client.send("Page.screencastFrameAck", { sessionId: frameObject.sessionId }).catch(() => {
-						stopped = true;
-					});
+			const existingScreencast = this.activeScreencasts.get(profile.id);
+			if (existingScreencast) {
+				await existingScreencast.stop().catch(() => {});
+			}
+
+			const cdpFactory = context as BrowserContext & {
+				newCDPSession?: (page: Page) => Promise<{
+					on: (eventName: string, listener: (payload: any) => Promise<void> | void) => void;
+					off?: (eventName: string, listener: (payload: any) => Promise<void> | void) => void;
+					send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+					detach?: () => Promise<void>;
+				}>;
+			};
+			if (typeof cdpFactory.newCDPSession !== "function") {
+				throw new Error("Browser screencast requires Chromium CDP support.");
+			}
+
+			await page.bringToFront().catch(() => {});
+			const client = await cdpFactory.newCDPSession(page);
+			const format = options.format ?? "jpeg";
+			let stopped = false;
+			let stopPromise: Promise<void> | null = null;
+
+			const stopScreencast = async () => {
+				if (stopPromise) {
+					await stopPromise;
+					return;
 				}
-			}
-		};
 
-		client.on("Page.screencastFrame", handleFrame);
-		await client.send("Page.startScreencast", {
-			format,
-			quality: options.quality ?? 35,
-			everyNthFrame: options.everyNthFrame ?? 1,
-		});
+				stopPromise = (async () => {
+					stopped = true;
+					if (typeof client.off === "function") {
+						client.off("Page.screencastFrame", handleFrame);
+					}
+					await client.send("Page.stopScreencast").catch(() => {});
+					await client.detach?.().catch(() => {});
+					if (this.activeScreencasts.get(profile.id) === handle) {
+						this.activeScreencasts.delete(profile.id);
+					}
+				})();
 
-		return {
-			audioMimeType: audioCaptureHandle?.mimeType,
-			stop: async () => {
+				await stopPromise;
+			};
+
+			const handleFrame = async (frameObject: { data: string; sessionId: number }) => {
 				if (stopped) {
 					return;
 				}
 
-				stopped = true;
-				await audioCaptureHandle?.stop().catch(() => {});
-				if (typeof client.off === "function") {
-					client.off("Page.screencastFrame", handleFrame);
+				try {
+					await options.onFrame({
+						mimeType: `image/${format}`,
+						bytes: Uint8Array.from(Buffer.from(frameObject.data, "base64")),
+					});
+				} finally {
+					if (!stopped) {
+						await client.send("Page.screencastFrameAck", { sessionId: frameObject.sessionId }).catch(() => {
+							void stopScreencast().catch(() => {});
+						});
+					}
 				}
-				await client.send("Page.stopScreencast").catch(() => {});
-				await client.detach?.().catch(() => {});
-			},
-		};
+			};
+
+			client.on("Page.screencastFrame", handleFrame);
+			await client.send("Page.startScreencast", {
+				format,
+				quality: options.quality ?? 35,
+				everyNthFrame: options.everyNthFrame ?? 1,
+			});
+
+			const handle: CloakScreencastHandle = {
+				stop: stopScreencast,
+			};
+
+			this.activeScreencasts.set(profile.id, handle);
+			return handle;
+		});
 	}
 
 	async clickProfile(target: string, x: number, y: number): Promise<void> {
-		const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
+		await this.runBoundedProfileOperation(target, "click profile", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
 
-		await page.bringToFront().catch(() => {});
-		await page.mouse.click(x, y, { button: "left" });
+			await page.bringToFront().catch(() => {});
+			await page.mouse.click(x, y, { button: "left" });
+		});
+	}
+
+	async pointerDownProfile(target: string, x: number, y: number): Promise<void> {
+		await this.runBoundedProfileOperation(target, "pointer down", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
+
+			await page.bringToFront().catch(() => {});
+			await page.mouse.move(x, y);
+			await page.mouse.down({ button: "left" });
+		});
+	}
+
+	async pointerMoveProfile(target: string, x: number, y: number): Promise<void> {
+		await this.runBoundedProfileOperation(target, "pointer move", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
+
+			await page.mouse.move(x, y, { steps: 2 });
+		});
+	}
+
+	async pointerUpProfile(target: string, x: number, y: number): Promise<void> {
+		await this.runBoundedProfileOperation(target, "pointer up", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
+
+			await page.mouse.move(x, y, { steps: 2 });
+			await page.mouse.up({ button: "left" });
+		});
 	}
 
 	async gestureProfile(target: string, points: Array<{ x: number; y: number }>): Promise<void> {
-		const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
+		await this.runBoundedProfileOperation(target, "gesture input", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
 
-		await page.bringToFront().catch(() => {});
-		const [startPoint, ...restPoints] = points;
-		if (!startPoint) {
-			return;
-		}
+			await page.bringToFront().catch(() => {});
+			const [startPoint, ...restPoints] = points;
+			if (!startPoint) {
+				return;
+			}
 
-		await page.mouse.move(startPoint.x, startPoint.y);
-		await page.mouse.down({ button: "left" });
-		for (const point of restPoints) {
-			await page.mouse.move(point.x, point.y, { steps: 1 });
-		}
-		await page.mouse.up({ button: "left" });
+			await page.mouse.move(startPoint.x, startPoint.y);
+			await page.mouse.down({ button: "left" });
+			for (const point of restPoints) {
+				await page.mouse.move(point.x, point.y, { steps: 1 });
+			}
+			await page.mouse.up({ button: "left" });
+		});
 	}
 
 	async wheelProfile(target: string, x: number, y: number, deltaX: number, deltaY: number): Promise<void> {
-		const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
+		await this.runBoundedProfileOperation(target, "wheel input", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
 
-		await page.bringToFront().catch(() => {});
-		await page.mouse.move(x, y);
-		await page.mouse.wheel(deltaX, deltaY);
+			await page.bringToFront().catch(() => {});
+			await page.mouse.move(x, y);
+			await page.mouse.wheel(deltaX, deltaY);
+		});
 	}
 
 	async keyboardProfile(
@@ -1439,31 +1550,66 @@ export class CloakKit extends Kit {
 			shiftKey?: boolean;
 		},
 	): Promise<void> {
-		const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
-		if (!page) {
-			throw new Error(`Browser profile ${target} has no active page.`);
-		}
+		await this.runBoundedProfileOperation(target, "keyboard input", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
 
-		await page.bringToFront().catch(() => {});
+			await page.bringToFront().catch(() => {});
 
-		const key = input.key;
-		const hasShortcutModifier = Boolean(input.ctrlKey || input.metaKey || input.altKey);
-		const isPrintable = key.length === 1;
+			const key = input.key;
+			const hasShortcutModifier = Boolean(input.ctrlKey || input.metaKey || input.altKey);
+			const isPrintable = key.length === 1;
 
-		if (!hasShortcutModifier && isPrintable) {
-			await page.keyboard.insertText(key);
-			return;
-		}
+			if (!hasShortcutModifier && isPrintable) {
+				await page.keyboard.insertText(key);
+				return;
+			}
 
-		const normalizedKey = normalizePlaywrightKey(key, input.code);
-		const modifiers: string[] = [];
-		if (input.ctrlKey) modifiers.push("Control");
-		if (input.altKey) modifiers.push("Alt");
-		if (input.shiftKey && (hasShortcutModifier || !isPrintable)) modifiers.push("Shift");
-		if (input.metaKey) modifiers.push("Meta");
+			const normalizedKey = normalizePlaywrightKey(key, input.code);
+			const modifiers: string[] = [];
+			if (input.ctrlKey) modifiers.push("Control");
+			if (input.altKey) modifiers.push("Alt");
+			if (input.shiftKey && (hasShortcutModifier || !isPrintable)) modifiers.push("Shift");
+			if (input.metaKey) modifiers.push("Meta");
 
-		const shortcut = [...modifiers, normalizedKey].join("+");
-		await page.keyboard.press(shortcut);
+			const shortcut = [...modifiers, normalizedKey].join("+");
+			await page.keyboard.press(shortcut);
+		});
+	}
+
+	async insertTextProfile(target: string, text: string): Promise<void> {
+		await this.runBoundedProfileOperation(target, "insert text", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
+
+			await page.bringToFront().catch(() => {});
+			await page.keyboard.insertText(text);
+		});
+	}
+
+	async readSelectedTextProfile(target: string): Promise<string> {
+		return await this.runBoundedProfileOperation(target, "read selected text", async () => {
+			const { page } = await this.resolveActivePage(target, { createIfMissing: false, activate: true });
+			if (!page) {
+				throw new Error(`Browser profile ${target} has no active page.`);
+			}
+
+			await page.bringToFront().catch(() => {});
+			return await page.evaluate(() => {
+				const activeElement = document.activeElement;
+				if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+					const selectionStart = activeElement.selectionStart ?? 0;
+					const selectionEnd = activeElement.selectionEnd ?? 0;
+					return activeElement.value.slice(selectionStart, selectionEnd);
+				}
+
+				return window.getSelection()?.toString() ?? "";
+			}).catch(() => "");
+		});
 	}
 
 	async getProfileStats(target: string): Promise<{ sizeBytes: number; cookies: number }> {

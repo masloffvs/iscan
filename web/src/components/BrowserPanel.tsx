@@ -4,6 +4,15 @@ import { captureRemoteCloakBrowserScreenshot, type RemoteBrowserProfileEntry } f
 import { useInterfaceStore } from "../store/ui";
 import BrowserPreviewModal from "./BrowserPreviewModal";
 
+type BrowserPanelProps = {
+  className?: string;
+  showHeader?: boolean;
+};
+
+function joinClassNames(...values: Array<string | false | null | undefined>): string {
+  return values.filter((value): value is string => typeof value === "string" && value.length > 0).join(" ");
+}
+
 function describeProfile(profile: RemoteBrowserProfileEntry): string {
   const details = [profile.headless ? "Headless" : "Headful"];
   if (profile.humanize) {
@@ -15,7 +24,7 @@ function describeProfile(profile: RemoteBrowserProfileEntry): string {
   return details.join(" · ");
 }
 
-export default function BrowserPanel() {
+export default function BrowserPanel({ className, showHeader = true }: BrowserPanelProps) {
   const browserProfiles = useInterfaceStore((state) => state.browserProfiles);
   const isBrowserLoading = useInterfaceStore((state) => state.isBrowserLoading);
   const browserActionTarget = useInterfaceStore((state) => state.browserActionTarget);
@@ -25,6 +34,7 @@ export default function BrowserPanel() {
   const stopBrowserProfile = useInterfaceStore((state) => state.stopBrowserProfile);
   const navigateBrowserProfile = useInterfaceStore((state) => state.navigateBrowserProfile);
   const openBrowserProfileModal = useInterfaceStore((state) => state.openBrowserProfileModal);
+  const openCommandPalette = useInterfaceStore((state) => state.openCommandPalette);
   const [selectedBrowserId, setSelectedBrowserId] = useState<string>("");
   const [previewBrowserId, setPreviewBrowserId] = useState<string | null>(null);
   const [navigateUrl, setNavigateUrl] = useState<string>("https://www.startpage.com/");
@@ -141,25 +151,43 @@ export default function BrowserPanel() {
   }
 
   return (
-    <div className="grow overflow-y-auto dense-scroll px-1">
-      <div className="mb-3 flex items-center justify-between gap-3 px-2">
-        <p className="text-[10px] uppercase tracking-[0.22em] text-[#68686e]">Cloak Browsers</p>
-        <button
-          type="button"
-          onClick={() => { void refreshBrowserList(); }}
-          disabled={isBrowserLoading}
-          className="rounded-full bg-white/[0.06] px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white transition hover:bg-white/[0.1] disabled:opacity-50"
-        >
-          {isBrowserLoading ? "Refreshing..." : "Refresh"}
-        </button>
-      </div>
+    <div className={joinClassNames("min-h-0 grow overflow-y-auto dense-scroll px-1", className)}>
+      {showHeader ? (
+        <div className="mb-3 flex items-center justify-between gap-3 px-2">
+          <p className="text-[10px] uppercase tracking-[0.22em] text-[#68686e]">Cloak Browsers</p>
+          <button
+            type="button"
+            onClick={() => { void refreshBrowserList(); }}
+            disabled={isBrowserLoading}
+            className="rounded-full bg-white/[0.06] px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white transition hover:bg-white/[0.1] disabled:opacity-50"
+          >
+            {isBrowserLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+      ) : null}
 
       {isBrowserLoading ? (
         <div className="px-2 py-3 text-[11px] text-[#68686e]">Loading browser profiles...</div>
       ) : sortedProfiles.length === 0 ? (
-        <div className="space-y-3 px-2 py-3 text-[11px] text-[#68686e]">
-          <p>No Cloak Browser profiles found.</p>
-          <p>Use <code className="rounded bg-white/[0.04] px-1 py-0.5 text-[10px]">$.kits.cloak.manager()</code> to create one.</p>
+        <div className="rounded-[16px] bg-white/[0.03] px-4 py-4 text-center">
+          <p className="text-[12px] font-medium text-white">No Cloak Browser profiles found.</p>
+          <p className="mt-2 text-[11px] leading-relaxed text-[#8b8b95]">Refresh the runtime list or jump into the command palette to create or open browser tooling faster.</p>
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => { void refreshBrowserList(); }}
+              className="rounded-full bg-white/[0.06] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-white transition hover:bg-white/[0.1]"
+            >
+              Refresh Profiles
+            </button>
+            <button
+              type="button"
+              onClick={openCommandPalette}
+              className="rounded-full bg-white/[0.04] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#d4d4da] transition hover:bg-white/[0.08] hover:text-white"
+            >
+              Command Palette
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3 px-1 pb-2">

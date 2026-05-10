@@ -8,6 +8,7 @@ import {
 	Kit,
 	ProxyKit,
 	QemuKit,
+	$settings,
 	$storageKit,
 } from "../src/kits";
 
@@ -21,6 +22,7 @@ export const $qemu = new QemuKit();
 
 export const $commonRuntimeKits = [
 	$storageKit,
+	$settings,
 	$ai,
 	$cloak,
 	$domainLookup,
@@ -62,4 +64,4 @@ export const commonRuntimeReady = startCommonRuntime();
 
 await commonRuntimeReady;
 
-export { $config, $hunter, $storageKit, logger };
+export { $config, $hunter, $settings, $storageKit, logger };

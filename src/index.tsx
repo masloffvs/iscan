@@ -1,6 +1,7 @@
 import { $config } from "./config";
+import { $settings } from "./kits";
 import { logger } from "./logger";
-import * as lodash from "lodash-es";
+import { createNotebookLibrariesNamespace } from "./notebook-libs";
 import {
   createTableEntity,
   createTextEntity,
@@ -69,6 +70,8 @@ const backgroundLifecycle = new BackgroundLifecycle({
   resourceLimits: $config.runtime.backgroundWorkers.resourceLimits,
 });
 
+const notebookLibraries = createNotebookLibrariesNamespace();
+
 const moduleRuntime = new ModuleRuntime(registeredModules, {
   helpers: {
     backgroundLifecycle,
@@ -83,8 +86,27 @@ const moduleRuntime = new ModuleRuntime(registeredModules, {
     output: outputStack,
   },
   sandboxEnvironment: {
-    _: lodash,
-    lodash,
+    _: notebookLibraries._,
+    lodash: notebookLibraries._,
+    $settings,
+    $libs: notebookLibraries,
+    dayjs: notebookLibraries.dayjs,
+    uuid: notebookLibraries.uuid,
+    changeCase: notebookLibraries.changeCase,
+    math: notebookLibraries.math,
+    mathjs: notebookLibraries.math,
+    async: notebookLibraries.async,
+    sugar: notebookLibraries.sugar,
+    ramda: notebookLibraries.ramda,
+    R: notebookLibraries.ramda,
+    Decimal: notebookLibraries.Decimal,
+    turf: notebookLibraries.turf,
+    JSONPath: notebookLibraries.JSONPath,
+    jsonPath: notebookLibraries.JSONPath,
+    diff: notebookLibraries.diff,
+    microdiff: notebookLibraries.diff,
+    jsonata: notebookLibraries.jsonata,
+    stdlib: notebookLibraries.stdlib,
   },
 });
 

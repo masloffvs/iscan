@@ -6,8 +6,10 @@ export type { AuditViteSpaAssetReport, AuditViteSpaFinding, AuditViteSpaParams, 
 export type { AuditViteSourcemapReport, AuditViteSourcemapsFinding, AuditViteSourcemapsParams, AuditViteSourcemapsResult, AuditViteSourcemapsSeverity } from "./audit";
 export { readFlagValue, readFlagValues, parseInlineParams, parseModuleParams } from "./cli";
 export { coreModulesModule } from "./core";
+export { coreNoteModule } from "./core";
 export { coreTaskManagerModule } from "./core";
 export type { CoreModulesParams } from "./core";
+export type { CoreNoteParams, CoreNoteResult } from "./core";
 export {
 	dockerBuildModule,
 	dockerCdModule,
@@ -210,8 +212,8 @@ export type {
 	ZoomEyePullParams,
 } from "./discovery";
 export { EvalRuntimeError, InvalidParamsError, ModulePromptError, UnknownModuleError, isModulePromptError } from "./errors";
-export { aiChatModule, aiConnectModule, aiListModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, kitsManagerModule, ollamaConnectModule, qemuConnectModule, qemuManagerModule } from "./kits";
-export type { AiChatParams, AiConnectParams, AiListParams, ElasticSearchConnectParams, ElasticSearchExploreParams, ElasticSearchSearchParams, OllamaConnectParams, QemuConnectParams } from "./kits";
+export { aiChatModule, aiConnectModule, aiCreateModule, aiDeleteModule, aiListModule, aiSelectModule, elasticSearchConnectModule, elasticSearchExploreModule, elasticSearchSearchModule, kitsManagerModule, ollamaConnectModule, portScanGetModule, portScanListModule, portScanPolicyModule, portScanScanModule, qemuConnectModule, qemuManagerModule } from "./kits";
+export type { AiChatParams, AiConnectParams, AiCreateParams, AiDeleteParams, AiListParams, AiSelectParams, ElasticSearchConnectParams, ElasticSearchExploreParams, ElasticSearchSearchParams, OllamaConnectParams, PortScanGetParams, PortScanListParams, PortScanScanParams, QemuConnectParams } from "./kits";
 export { defineExecutor, defineModule, getModuleCategory } from "./module";
 export type { ModuleDefinition, ModuleExecutionContext, ModuleExecutor } from "./module";
 export {

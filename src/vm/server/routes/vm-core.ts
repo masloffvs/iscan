@@ -14,6 +14,19 @@ export async function handleVmCoreRoutes(
   url: URL,
   sessions: VmServerSessions,
 ): Promise<Response | null> {
+  if (url.pathname === "/vm/types/notebook") {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    return createJsonResponse({
+      ok: true,
+      result: {
+        source: sessions.getNotebookTypeSource(),
+      },
+    });
+  }
+
   if (url.pathname === "/vm/init") {
     if (request.method !== "POST") {
       return createMethodNotAllowedResponse(["POST"]);
@@ -37,6 +50,51 @@ export async function handleVmCoreRoutes(
     );
   }
 
+  const inspectorMatch = url.pathname.match(/^\/vm\/([^/]+)\/inspector$/u);
+  if (inspectorMatch) {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    const vmCode = normalizeVmCode(decodeURIComponent(inspectorMatch[1] ?? ""));
+    const inspector = await sessions.inspectSession(vmCode);
+
+    return createJsonResponse({
+      ok: true,
+      result: inspector,
+    });
+  }
+
+  const inspectorRootsMatch = url.pathname.match(/^\/vm\/([^/]+)\/inspector\/roots$/u);
+  if (inspectorRootsMatch) {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    const vmCode = normalizeVmCode(decodeURIComponent(inspectorRootsMatch[1] ?? ""));
+    const groups = await sessions.listInspectorRootGroups(vmCode);
+
+    return createJsonResponse({
+      ok: true,
+      result: { groups },
+    });
+  }
+
+  const inspectorNodeMatch = url.pathname.match(/^\/vm\/([^/]+)\/inspector\/nodes\/([^/]+)$/u);
+  if (inspectorNodeMatch) {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    const vmCode = normalizeVmCode(decodeURIComponent(inspectorNodeMatch[1] ?? ""));
+    const node = await sessions.inspectSessionNode(vmCode, decodeURIComponent(inspectorNodeMatch[2] ?? ""));
+
+    return createJsonResponse({
+      ok: true,
+      result: node,
+    });
+  }
+
   const evalMatch = url.pathname.match(/^\/vm\/([^/]+)\/eval$/u);
   if (evalMatch) {
     if (request.method !== "POST") {
@@ -45,7 +103,10 @@ export async function handleVmCoreRoutes(
 
     const vmCode = normalizeVmCode(decodeURIComponent(evalMatch[1] ?? ""));
     const body = readVmEvalRequestBody(await readJsonBody(request));
-    const result = await sessions.evaluate(vmCode, body.code, body.language);
+    const result = await sessions.evaluate(vmCode, body.code, body.language, {
+      cellId: body.cellId,
+      previousCellId: body.previousCellId,
+    });
 
     return createJsonResponse({
       ok: true,

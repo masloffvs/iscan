@@ -1,7 +1,8 @@
+import { memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useInterfaceStore } from "../store/ui";
 
-export default function Tooltip() {
+export default memo(function Tooltip() {
   const tooltip = useInterfaceStore((state) => state.tooltip);
 
   return (
@@ -13,7 +14,7 @@ export default function Tooltip() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 5, scale: 0.95 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
-            className="px-3 py-1.5 bg-[#171717]/90 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md"
+            className="px-3 py-1.5 bg-[#121212]/90 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md"
           >
             <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#e0e0e0] whitespace-nowrap">
               {tooltip}
@@ -23,4 +24,4 @@ export default function Tooltip() {
       </AnimatePresence>
     </div>
   );
-}
+});

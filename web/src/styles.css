@@ -1,6 +1,22 @@
 @import "@xterm/xterm/css/xterm.css";
 @import "tailwindcss";
 
+@font-face {
+  font-family: "SF Mono";
+  src: url("/fonts/SF-Mono-Regular.otf") format("opentype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SF Mono";
+  src: url("/fonts/SF-Mono-Bold.otf") format("opentype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 @keyframes notebook-progress-primary {
   0% {
     transform: translateX(-120%);
@@ -39,9 +55,10 @@
 
 :root {
   color-scheme: dark;
-  --iscan-bg: #171717;
+  --iscan-bg: #121212;
   --iscan-panel: #0d0d0d;
   --iscan-edge: transparent;
+  --iscan-editor-font-family: "SF Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --iscan-signal: #d4d4d8;
 }
 
@@ -54,7 +71,7 @@ body,
 body {
   margin: 0;
   font-family: "-apple-system-body", "ui-sans-serif", "-apple-system", "system-ui", "Segoe UI", "Helvetica", "Apple Color Emoji", "Arial", "sans-serif", "Segoe UI Emoji", "Segoe UI Symbol";
-  background: #171717;
+  background: #121212;
   color: #f5f5f5;
   overflow: hidden;
 }
@@ -102,15 +119,73 @@ code {
   background: rgba(255, 255, 255, 0.22);
 }
 
+.notebook-code-editor .cm-editor,
+.notebook-code-editor .cm-scroller,
+.notebook-code-editor .cm-gutters {
+  font-family: var(--iscan-editor-font-family);
+}
+
+.notebook-code-editor .cm-content,
+.notebook-code-editor .cm-gutterElement {
+  font-size: 12px;
+}
+
+.notebook-code-editor .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.notebook-code-editor .cm-scroller::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.notebook-code-editor .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.notebook-code-editor .cm-scroller::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.notebook-code-editor .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.monaco-editor .notebook-sql-token-keyword {
+  color: #ff7b72 !important;
+}
+
+.monaco-editor .notebook-sql-token-function {
+  color: #d2a8ff !important;
+}
+
+.monaco-editor .notebook-sql-token-string {
+  color: #7ee787 !important;
+}
+
+.monaco-editor .notebook-sql-token-number {
+  color: #79c0ff !important;
+}
+
+.monaco-editor .notebook-sql-token-operator {
+  color: #c9d1d9 !important;
+}
+
+.monaco-editor .notebook-sql-token-comment {
+  color: #8b949e !important;
+  font-style: italic;
+}
+
 .package-box-terminal {
   position: relative;
-  background: #171717;
+  background: #121212;
 }
 
 .package-box-terminal .xterm {
   height: 100%;
   padding: 2px 0 18px;
-  background: #171717;
+  background: #121212;
 }
 
 .package-box-terminal-fullscreen .xterm {
@@ -120,7 +195,7 @@ code {
 .package-box-terminal .xterm-viewport {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
-  background: #171717;
+  background: #121212;
 }
 
 .package-box-terminal .xterm-viewport::-webkit-scrollbar {
@@ -137,5 +212,5 @@ code {
 }
 
 .package-box-terminal .xterm-screen canvas {
-  background: #171717 !important;
+  background: #121212 !important;
 }

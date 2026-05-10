@@ -12,6 +12,7 @@ import {
 	type BpkgSupportedPackageSummary,
 	type BpkgTranspiledCommand,
 } from "../bpkg";
+import { emitExecutionLogChunk } from "../execution-log";
 import { $manifest } from "../manifest";
 import { resolveWritableRuntimePath } from "../runtime-paths";
 import { isArchCompatibleDistro, readLinuxDistroInfo, type LinuxDistroInfo } from "../utils/distro-detection";
@@ -30,6 +31,20 @@ const DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS: readonly BpkgPrivilegeLevel[] = ["s
 const HOST_PRIVILEGED_CAPABILITIES = ["CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_NET_RAW"] as const;
 const BPKG_ERROR_OUTPUT_MAX_LENGTH = 2048;
 const BPKG_ERROR_OUTPUT_MAX_LINES = 18;
+const BPKG_BOX_POLICY_BOOLEAN_KEYS = [
+	"allowHostPrivileged",
+	"allowSandboxRw",
+	"defaultSandboxRw",
+	"hostDev",
+	"hostProc",
+	"hostSys",
+	"shareNetwork",
+	"unshareUser",
+	"unshareIpc",
+	"unsharePid",
+	"unshareUts",
+	"unshareCgroup",
+] as const;
 const BPKG_SANDBOX_SYS_MODES = ["off", "host-ro", "host-rw", "sysfs"] as const;
 const BPKG_SANDBOX_DEV_MODES = ["sandbox", "host"] as const;
 const BPKG_SANDBOX_PROC_MODES = ["sandbox", "host-ro", "host-rw"] as const;
@@ -44,6 +59,8 @@ const DEFAULT_BPKG_SANDBOX_POLICY_EXTENSIONS = {
 export type BpkgBoxStatus = "missing" | "building" | "ready" | "error";
 
 export type { BpkgPrivilegeLevel } from "../bpkg";
+
+type BpkgBoxPolicyBooleanKey = (typeof BPKG_BOX_POLICY_BOOLEAN_KEYS)[number];
 
 export type BpkgSandboxSysMode = (typeof BPKG_SANDBOX_SYS_MODES)[number];
 export type BpkgSandboxDevMode = (typeof BPKG_SANDBOX_DEV_MODES)[number];
@@ -73,6 +90,19 @@ export type BpkgSandboxPolicyExtensionsInput = {
 };
 
 export type BpkgBoxPrivilegeConfig = {
+	allowHostPrivileged: boolean;
+	allowSandboxRw: boolean;
+	defaultSandboxRw: boolean;
+	hostDev: boolean;
+	hostProc: boolean;
+	hostSys: boolean;
+	shareNetwork: boolean;
+	unshareUser: boolean;
+	unshareIpc: boolean;
+	unsharePid: boolean;
+	unshareUts: boolean;
+	unshareCgroup: boolean;
+	// Legacy compatibility fields kept at runtime while callers migrate.
 	allowedPrivilegeLevels: BpkgPrivilegeLevel[];
 	defaultPrivilegeLevel: BpkgPrivilegeLevel;
 	sandboxPolicyExtensions: BpkgSandboxPolicyExtensions;
@@ -90,12 +120,24 @@ export type BpkgHostInfo = {
 };
 
 export type BpkgBoxRecord = {
+	allowHostPrivileged: boolean;
+	allowSandboxRw: boolean;
 	createdAt: number;
+	defaultSandboxRw: boolean;
 	description?: string;
 	id: string;
+	hostDev: boolean;
+	hostProc: boolean;
+	hostSys: boolean;
 	lastError?: string;
 	name: string;
 	packages: string[];
+	shareNetwork: boolean;
+	unshareUser: boolean;
+	unshareIpc: boolean;
+	unsharePid: boolean;
+	unshareUts: boolean;
+	unshareCgroup: boolean;
 	allowedPrivilegeLevels: BpkgPrivilegeLevel[];
 	defaultPrivilegeLevel: BpkgPrivilegeLevel;
 	sandboxPolicyExtensions: BpkgSandboxPolicyExtensions;
@@ -156,19 +198,29 @@ export type BpkgTerminalSession = {
 	close: () => Promise<void>;
 };
 
+type PersistedBpkgBoxRecord = Omit<BpkgBoxRecord, "allowedPrivilegeLevels" | "defaultPrivilegeLevel" | "sandboxPolicyExtensions">;
+
 type PersistedBpkgRegistry = {
+	boxes: PersistedBpkgBoxRecord[];
+	defaultBoxId: string | null;
+};
+
+type RuntimeBpkgRegistry = {
 	boxes: BpkgBoxRecord[];
 	defaultBoxId: string | null;
 };
 
-type CreateBoxOptions = {
+type BpkgBoxPrivilegeConfigInput = Partial<Record<BpkgBoxPolicyBooleanKey, unknown>> & {
 	allowedPrivilegeLevels?: readonly BpkgPrivilegeLevel[];
-	description?: string;
 	defaultPrivilegeLevel?: BpkgPrivilegeLevel;
+	sandboxPolicyExtensions?: BpkgSandboxPolicyExtensionsInput;
+};
+
+type CreateBoxOptions = BpkgBoxPrivilegeConfigInput & {
+	description?: string;
 	id?: string;
 	name?: string;
 	packages?: readonly string[];
-	sandboxPolicyExtensions?: BpkgSandboxPolicyExtensionsInput;
 };
 
 type ExecuteBoxCommandOptions = {
@@ -194,7 +246,7 @@ type OpenBoxTerminalOptions = {
 	rows?: number;
 };
 
-type SetBoxPrivilegeOptions = Partial<BpkgBoxPrivilegeConfig>;
+type SetBoxPrivilegeOptions = BpkgBoxPrivilegeConfigInput;
 
 type HostRunner = "bwrap" | "pacstrap" | "nspawn";
 
@@ -228,12 +280,13 @@ async function readOutput(stream: ReadableStream<Uint8Array> | null | undefined)
 async function readOutputWithHandler(
 	stream: ReadableStream<Uint8Array> | null | undefined,
 	handler?: ((chunk: string) => void | Promise<void>) | undefined,
+	streamName?: "stdout" | "stderr",
 ): Promise<string> {
 	if (!stream) {
 		return "";
 	}
 
-	if (!handler) {
+	if (!handler && !streamName) {
 		return await readOutput(stream);
 	}
 
@@ -250,14 +303,26 @@ async function readOutputWithHandler(
 			const chunk = decoder.decode(value, { stream: true });
 			output += chunk;
 			if (chunk.length > 0) {
-				await handler(chunk);
+				if (streamName) {
+					emitExecutionLogChunk({ stream: streamName, chunk });
+				}
+
+				if (handler) {
+					await handler(chunk);
+				}
 			}
 		}
 
 		const tail = decoder.decode();
 		output += tail;
 		if (tail.length > 0) {
-			await handler(tail);
+			if (streamName) {
+				emitExecutionLogChunk({ stream: streamName, chunk: tail });
+			}
+
+			if (handler) {
+				await handler(tail);
+			}
 		}
 	} finally {
 		reader.releaseLock();
@@ -402,10 +467,100 @@ function slugifyBoxId(value: string): string {
 function cloneBox(box: BpkgBoxRecord): BpkgBoxRecord {
 	return {
 		...box,
+		allowHostPrivileged: box.allowHostPrivileged,
+		allowSandboxRw: box.allowSandboxRw,
 		allowedPrivilegeLevels: [...box.allowedPrivilegeLevels],
+		defaultSandboxRw: box.defaultSandboxRw,
 		packages: [...box.packages],
+		hostDev: box.hostDev,
+		hostProc: box.hostProc,
+		hostSys: box.hostSys,
+		shareNetwork: box.shareNetwork,
+		unshareUser: box.unshareUser,
+		unshareIpc: box.unshareIpc,
+		unsharePid: box.unsharePid,
+		unshareUts: box.unshareUts,
+		unshareCgroup: box.unshareCgroup,
 		sandboxPolicyExtensions: cloneSandboxPolicyExtensions(box.sandboxPolicyExtensions),
 	};
+}
+
+function createDefaultBpkgBoxPrivilegeConfig(): BpkgBoxPrivilegeConfig {
+	return {
+		allowHostPrivileged: false,
+		allowSandboxRw: true,
+		allowedPrivilegeLevels: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS],
+		defaultPrivilegeLevel: DEFAULT_BPKG_PRIVILEGE_LEVEL,
+		defaultSandboxRw: false,
+		hostDev: false,
+		hostProc: false,
+		hostSys: false,
+		shareNetwork: true,
+		unshareUser: true,
+		unshareIpc: true,
+		unsharePid: true,
+		unshareUts: true,
+		unshareCgroup: true,
+		sandboxPolicyExtensions: createDefaultSandboxPolicyExtensions(),
+	};
+}
+
+function listAllowedBpkgPrivilegeLevels(value: Pick<BpkgBoxPrivilegeConfig, "allowHostPrivileged" | "allowSandboxRw">): BpkgPrivilegeLevel[] {
+	return [
+		"sandbox-ro",
+		...(value.allowSandboxRw ? ["sandbox-rw" as const] : []),
+		...(value.allowHostPrivileged ? ["host-privileged" as const] : []),
+	];
+}
+
+function createLegacySandboxPolicyExtensions(value: Pick<BpkgBoxPrivilegeConfig, "hostDev" | "hostProc" | "hostSys" | "shareNetwork">): BpkgSandboxPolicyExtensions {
+	return {
+		devMode: value.hostDev ? "host" : "sandbox",
+		extraBindMounts: [],
+		procMode: value.hostProc ? "host-ro" : "sandbox",
+		shareNetwork: value.shareNetwork,
+		sysMode: value.hostSys ? "host-ro" : "off",
+	};
+}
+
+function hydrateLegacyPrivilegeCompatibility(value: Pick<BpkgBoxPrivilegeConfig, BpkgBoxPolicyBooleanKey>): Pick<BpkgBoxPrivilegeConfig, "allowedPrivilegeLevels" | "defaultPrivilegeLevel" | "sandboxPolicyExtensions"> {
+	return {
+		allowedPrivilegeLevels: listAllowedBpkgPrivilegeLevels(value),
+		defaultPrivilegeLevel: value.defaultSandboxRw ? "sandbox-rw" : "sandbox-ro",
+		sandboxPolicyExtensions: createLegacySandboxPolicyExtensions(value),
+	};
+}
+
+function extractFlatBpkgBoxPrivilegeConfig(value: Pick<BpkgBoxPrivilegeConfig, BpkgBoxPolicyBooleanKey>): Pick<BpkgBoxPrivilegeConfig, BpkgBoxPolicyBooleanKey> {
+	return {
+		allowHostPrivileged: value.allowHostPrivileged,
+		allowSandboxRw: value.allowSandboxRw,
+		defaultSandboxRw: value.defaultSandboxRw,
+		hostDev: value.hostDev,
+		hostProc: value.hostProc,
+		hostSys: value.hostSys,
+		shareNetwork: value.shareNetwork,
+		unshareUser: value.unshareUser,
+		unshareIpc: value.unshareIpc,
+		unsharePid: value.unsharePid,
+		unshareUts: value.unshareUts,
+		unshareCgroup: value.unshareCgroup,
+	};
+}
+
+function hasFlatBpkgBoxPolicyInput(value: unknown): value is Partial<Record<BpkgBoxPolicyBooleanKey, unknown>> {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	return BPKG_BOX_POLICY_BOOLEAN_KEYS.some((key) => key in value);
+}
+
+function hasLegacyBpkgBoxPolicyInput(
+	value: unknown,
+): value is { allowedPrivilegeLevels?: unknown; defaultPrivilegeLevel?: unknown; sandboxPolicyExtensions?: unknown } {
+	return isRecord(value)
+		&& ("allowedPrivilegeLevels" in value || "defaultPrivilegeLevel" in value || "sandboxPolicyExtensions" in value);
 }
 
 function isBpkgPrivilegeLevel(value: string): value is BpkgPrivilegeLevel {
@@ -622,6 +777,50 @@ function normalizeBpkgAllowedPrivilegeLevels(
 }
 
 function normalizeBpkgBoxPrivilegeConfig(
+	value: BpkgBoxPrivilegeConfigInput,
+	fallbackDefaultPrivilegeLevel: BpkgPrivilegeLevel = DEFAULT_BPKG_PRIVILEGE_LEVEL,
+): BpkgBoxPrivilegeConfig {
+	if (hasFlatBpkgBoxPolicyInput(value)) {
+		return normalizeFlatBpkgBoxPrivilegeConfig(value);
+	}
+
+	if (hasLegacyBpkgBoxPolicyInput(value)) {
+		return normalizeLegacyBpkgBoxPrivilegeConfig(value, fallbackDefaultPrivilegeLevel);
+	}
+
+	return createDefaultBpkgBoxPrivilegeConfig();
+}
+
+function normalizeFlatBpkgBoxPrivilegeConfig(
+	value: Partial<Record<BpkgBoxPolicyBooleanKey, unknown>>,
+): BpkgBoxPrivilegeConfig {
+	const defaults = createDefaultBpkgBoxPrivilegeConfig();
+	const normalized: Pick<BpkgBoxPrivilegeConfig, BpkgBoxPolicyBooleanKey> = {
+		allowHostPrivileged: normalizeOptionalBoolean(value.allowHostPrivileged, "allowHostPrivileged") ?? defaults.allowHostPrivileged,
+		allowSandboxRw: normalizeOptionalBoolean(value.allowSandboxRw, "allowSandboxRw") ?? defaults.allowSandboxRw,
+		defaultSandboxRw: normalizeOptionalBoolean(value.defaultSandboxRw, "defaultSandboxRw") ?? defaults.defaultSandboxRw,
+		hostDev: normalizeOptionalBoolean(value.hostDev, "hostDev") ?? defaults.hostDev,
+		hostProc: normalizeOptionalBoolean(value.hostProc, "hostProc") ?? defaults.hostProc,
+		hostSys: normalizeOptionalBoolean(value.hostSys, "hostSys") ?? defaults.hostSys,
+		shareNetwork: normalizeOptionalBoolean(value.shareNetwork, "shareNetwork") ?? defaults.shareNetwork,
+		unshareUser: normalizeOptionalBoolean(value.unshareUser, "unshareUser") ?? defaults.unshareUser,
+		unshareIpc: normalizeOptionalBoolean(value.unshareIpc, "unshareIpc") ?? defaults.unshareIpc,
+		unsharePid: normalizeOptionalBoolean(value.unsharePid, "unsharePid") ?? defaults.unsharePid,
+		unshareUts: normalizeOptionalBoolean(value.unshareUts, "unshareUts") ?? defaults.unshareUts,
+		unshareCgroup: normalizeOptionalBoolean(value.unshareCgroup, "unshareCgroup") ?? defaults.unshareCgroup,
+	};
+
+	if (normalized.defaultSandboxRw) {
+		normalized.allowSandboxRw = true;
+	}
+
+	return {
+		...normalized,
+		...hydrateLegacyPrivilegeCompatibility(normalized),
+	};
+}
+
+function normalizeLegacyBpkgBoxPrivilegeConfig(
 	value: { allowedPrivilegeLevels?: unknown; defaultPrivilegeLevel?: unknown; sandboxPolicyExtensions?: unknown },
 	fallbackDefaultPrivilegeLevel: BpkgPrivilegeLevel = DEFAULT_BPKG_PRIVILEGE_LEVEL,
 ): BpkgBoxPrivilegeConfig {
@@ -629,82 +828,128 @@ function normalizeBpkgBoxPrivilegeConfig(
 		value.defaultPrivilegeLevel,
 		"defaultPrivilegeLevel",
 	) ?? fallbackDefaultPrivilegeLevel;
-	return {
-		allowedPrivilegeLevels: normalizeBpkgAllowedPrivilegeLevels(
-			value.allowedPrivilegeLevels,
-			"allowedPrivilegeLevels",
-			defaultPrivilegeLevel,
-		),
+	const allowedPrivilegeLevels = normalizeBpkgAllowedPrivilegeLevels(
+		value.allowedPrivilegeLevels,
+		"allowedPrivilegeLevels",
 		defaultPrivilegeLevel,
-		sandboxPolicyExtensions: normalizeBpkgSandboxPolicyExtensions(value.sandboxPolicyExtensions),
-	};
+	);
+	const sandboxPolicyExtensions = normalizeBpkgSandboxPolicyExtensions(value.sandboxPolicyExtensions);
+	return normalizeFlatBpkgBoxPrivilegeConfig({
+		allowHostPrivileged: allowedPrivilegeLevels.includes("host-privileged"),
+		allowSandboxRw: allowedPrivilegeLevels.includes("sandbox-rw"),
+		defaultSandboxRw: defaultPrivilegeLevel === "sandbox-rw",
+		hostDev: sandboxPolicyExtensions.devMode === "host",
+		hostProc: sandboxPolicyExtensions.procMode !== "sandbox",
+		hostSys: sandboxPolicyExtensions.sysMode !== "off",
+		shareNetwork: sandboxPolicyExtensions.shareNetwork,
+	});
+}
+
+function mergeBpkgBoxPrivilegeConfig(
+	base: BpkgBoxPrivilegeConfig,
+	overrides: BpkgBoxPrivilegeConfigInput,
+): BpkgBoxPrivilegeConfig {
+	let next = extractBpkgBoxPrivilegeConfig(base);
+
+	if (hasLegacyBpkgBoxPolicyInput(overrides)) {
+		const legacyBase = hydrateLegacyPrivilegeCompatibility(extractFlatBpkgBoxPrivilegeConfig(next));
+		next = normalizeLegacyBpkgBoxPrivilegeConfig({
+			allowedPrivilegeLevels: overrides.allowedPrivilegeLevels ?? legacyBase.allowedPrivilegeLevels,
+			defaultPrivilegeLevel: overrides.defaultPrivilegeLevel ?? legacyBase.defaultPrivilegeLevel,
+			sandboxPolicyExtensions: overrides.sandboxPolicyExtensions ?? legacyBase.sandboxPolicyExtensions,
+		});
+	}
+
+	if (hasFlatBpkgBoxPolicyInput(overrides)) {
+		next = normalizeFlatBpkgBoxPrivilegeConfig({
+			...extractFlatBpkgBoxPrivilegeConfig(next),
+			...overrides,
+		});
+	}
+
+	return next;
 }
 
 function normalizePersistedBpkgBoxPrivilegeConfig(box: Partial<BpkgBoxRecord>): BpkgBoxPrivilegeConfig {
 	try {
 		return normalizeBpkgBoxPrivilegeConfig(box, DEFAULT_BPKG_PRIVILEGE_LEVEL);
 	} catch {
-		return {
-			allowedPrivilegeLevels: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS],
-			defaultPrivilegeLevel: DEFAULT_BPKG_PRIVILEGE_LEVEL,
-			sandboxPolicyExtensions: createDefaultSandboxPolicyExtensions(),
-		};
+		return createDefaultBpkgBoxPrivilegeConfig();
 	}
 }
 
 function extractBpkgBoxPrivilegeConfig(
-	box: Pick<BpkgBoxRecord, "allowedPrivilegeLevels" | "defaultPrivilegeLevel" | "sandboxPolicyExtensions">,
+	box: Pick<BpkgBoxPrivilegeConfig, BpkgBoxPolicyBooleanKey>,
 ): BpkgBoxPrivilegeConfig {
+	return normalizeFlatBpkgBoxPrivilegeConfig(extractFlatBpkgBoxPrivilegeConfig(box));
+}
+
+function applyBpkgBoxPrivilegeConfig<T extends Omit<BpkgBoxRecord, keyof BpkgBoxPrivilegeConfig>>(
+	box: T,
+	privilegeConfig: BpkgBoxPrivilegeConfig,
+): BpkgBoxRecord {
+	const flatPolicy = extractFlatBpkgBoxPrivilegeConfig(privilegeConfig);
 	return {
-		allowedPrivilegeLevels: [...box.allowedPrivilegeLevels],
-		defaultPrivilegeLevel: box.defaultPrivilegeLevel,
-		sandboxPolicyExtensions: cloneSandboxPolicyExtensions(box.sandboxPolicyExtensions),
+		...box,
+		...flatPolicy,
+		...hydrateLegacyPrivilegeCompatibility(flatPolicy),
 	};
 }
 
-function buildBwrapSandboxArgs(policy: BpkgSandboxPolicyExtensions, options: { supportsSysfs: boolean }): string[] {
+function toPersistedBpkgBoxRecord(box: BpkgBoxRecord): PersistedBpkgBoxRecord {
+	const { allowedPrivilegeLevels, defaultPrivilegeLevel, sandboxPolicyExtensions, ...persisted } = box;
+	return persisted;
+}
+
+function buildBwrapSandboxArgs(policy: Pick<BpkgBoxRecord, "hostDev" | "hostProc" | "hostSys">): string[] {
 	const args: string[] = [];
 
-	if (policy.devMode === "host") {
+	if (policy.hostDev) {
 		args.push("--dev-bind", "/dev", "/dev");
 	} else {
 		args.push("--dev", "/dev");
 	}
 
-	switch (policy.procMode) {
-		case "host-ro":
-			args.push("--ro-bind", "/proc", "/proc");
-			break;
-		case "host-rw":
-			args.push("--bind", "/proc", "/proc");
-			break;
-		default:
-			args.push("--proc", "/proc");
-			break;
+	if (policy.hostProc) {
+		args.push("--ro-bind", "/proc", "/proc");
+	} else {
+		args.push("--proc", "/proc");
 	}
 
-	switch (policy.sysMode) {
-		case "host-ro":
-			args.push("--ro-bind", "/sys", "/sys");
-			break;
-		case "host-rw":
-			args.push("--bind", "/sys", "/sys");
-			break;
-		case "sysfs":
-			if (options.supportsSysfs) {
-				args.push("--sysfs", "/sys");
-			} else {
-				// Older bubblewrap releases do not implement --sysfs.
-				// Fallback to a read-only host bind so the sandbox still starts.
-				args.push("--ro-bind", "/sys", "/sys");
-			}
-			break;
-		default:
-			break;
+	if (policy.hostSys) {
+		args.push("--ro-bind", "/sys", "/sys");
 	}
 
-	for (const bindMount of policy.extraBindMounts) {
-		args.push(`--${bindMount.mode}`, bindMount.source, bindMount.target);
+	return args;
+}
+
+function buildBwrapNamespaceArgs(
+	policy: Pick<BpkgBoxRecord, "shareNetwork" | "unshareUser" | "unshareIpc" | "unsharePid" | "unshareUts" | "unshareCgroup">,
+): string[] {
+	const args: string[] = [];
+
+	if (policy.unshareUser) {
+		args.push("--unshare-user");
+	}
+
+	if (policy.unshareIpc) {
+		args.push("--unshare-ipc");
+	}
+
+	if (policy.unsharePid) {
+		args.push("--unshare-pid");
+	}
+
+	if (!policy.shareNetwork) {
+		args.push("--unshare-net");
+	}
+
+	if (policy.unshareUts) {
+		args.push("--unshare-uts");
+	}
+
+	if (policy.unshareCgroup) {
+		args.push("--unshare-cgroup");
 	}
 
 	return args;
@@ -739,7 +984,7 @@ function resolveAvailableManifestDependencyCommand(dependencyId: string): string
 export class BpkgKit extends Kit {
 	private readonly dataRoot: string;
 	private readonly registryPath: string;
-	private registry: PersistedBpkgRegistry = {
+	private registry: RuntimeBpkgRegistry = {
 		boxes: [],
 		defaultBoxId: null,
 	};
@@ -759,7 +1004,6 @@ export class BpkgKit extends Kit {
 		platform: process.platform,
 		sudoExecutable: null,
 	};
-	private bwrapSupportsSysfs = false;
 
 	constructor(options: { dataRoot?: string } = {}) {
 		super({
@@ -775,7 +1019,6 @@ export class BpkgKit extends Kit {
 		await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
 		this.registry = await this.loadRegistry();
 		this.hostInfo = await this.detectHostInfo();
-		this.bwrapSupportsSysfs = await this.detectBwrapSysfsSupport();
 		this.registry.boxes = await Promise.all(this.registry.boxes.map(async (box) => await this.refreshBoxRecord(box)));
 		if (this.registry.defaultBoxId && !this.registry.boxes.some((box) => box.id === this.registry.defaultBoxId)) {
 			this.registry.defaultBoxId = null;
@@ -841,44 +1084,29 @@ export class BpkgKit extends Kit {
 		const now = Date.now();
 		const existingPrivilegeConfig = existingBox
 			? extractBpkgBoxPrivilegeConfig(existingBox)
-			: {
-				allowedPrivilegeLevels: [...DEFAULT_BPKG_ALLOWED_PRIVILEGE_LEVELS],
-				defaultPrivilegeLevel: DEFAULT_BPKG_PRIVILEGE_LEVEL,
-				sandboxPolicyExtensions: createDefaultSandboxPolicyExtensions(),
-			};
-		const nextPrivilegeConfig = normalizeBpkgBoxPrivilegeConfig({
-			allowedPrivilegeLevels: options.allowedPrivilegeLevels ?? existingPrivilegeConfig.allowedPrivilegeLevels,
-			defaultPrivilegeLevel: options.defaultPrivilegeLevel ?? existingPrivilegeConfig.defaultPrivilegeLevel,
-			sandboxPolicyExtensions: options.sandboxPolicyExtensions
-				? {
-					...existingPrivilegeConfig.sandboxPolicyExtensions,
-					...options.sandboxPolicyExtensions,
-				}
-				: existingPrivilegeConfig.sandboxPolicyExtensions,
-		}, existingPrivilegeConfig.defaultPrivilegeLevel);
+			: createDefaultBpkgBoxPrivilegeConfig();
+		const nextPrivilegeConfig = mergeBpkgBoxPrivilegeConfig(existingPrivilegeConfig, options);
 		const workingBox: BpkgBoxRecord = existingBox
-			? {
+			? applyBpkgBoxPrivilegeConfig({
 				...existingBox,
 				...(options.description ? { description: options.description } : {}),
-				...nextPrivilegeConfig,
 				name: options.name?.trim() || existingBox.name,
 				packages: [...existingBox.packages],
 				rootPath: this.resolveBoxRootPath(boxId),
 				status: "building",
 				updatedAt: now,
 				lastError: undefined,
-			}
-			: {
+			}, nextPrivilegeConfig)
+			: applyBpkgBoxPrivilegeConfig({
 				createdAt: now,
 				...(options.description ? { description: options.description } : {}),
-				...nextPrivilegeConfig,
 				id: boxId,
 				name: options.name?.trim() || boxId,
 				packages: [],
 				rootPath: this.resolveBoxRootPath(boxId),
 				status: "building",
 				updatedAt: now,
-			};
+			}, nextPrivilegeConfig);
 
 		this.upsertBox(workingBox);
 		await this.persistRegistry();
@@ -919,21 +1147,11 @@ export class BpkgKit extends Kit {
 
 	async setBoxPrivilege(boxId: string, options: SetBoxPrivilegeOptions): Promise<BpkgBoxRecord> {
 		const box = this.requireBox(boxId);
-		const privilegeConfig = normalizeBpkgBoxPrivilegeConfig({
-			allowedPrivilegeLevels: options.allowedPrivilegeLevels ?? box.allowedPrivilegeLevels,
-			defaultPrivilegeLevel: options.defaultPrivilegeLevel ?? box.defaultPrivilegeLevel,
-			sandboxPolicyExtensions: options.sandboxPolicyExtensions
-				? {
-					...box.sandboxPolicyExtensions,
-					...options.sandboxPolicyExtensions,
-				}
-				: box.sandboxPolicyExtensions,
-		}, box.defaultPrivilegeLevel);
-		const updatedBox: BpkgBoxRecord = {
+		const privilegeConfig = mergeBpkgBoxPrivilegeConfig(extractBpkgBoxPrivilegeConfig(box), options);
+		const updatedBox = applyBpkgBoxPrivilegeConfig({
 			...box,
-			...privilegeConfig,
 			updatedAt: Date.now(),
-		};
+		}, privilegeConfig);
 		this.upsertBox(updatedBox);
 		await this.persistRegistry();
 		return updatedBox;
@@ -1162,6 +1380,7 @@ export class BpkgKit extends Kit {
 			privilegeLevel: options.privilegeLevel ?? transpiled.privilegeLevel,
 		});
 		const result = await this.runPreparedBoxCommand(preparedExecution, {
+			acceptedExitCodes: bindingDefinition.acceptedExitCodes,
 			commandHandlers: options.commandHandlers,
 		});
 		const parsed = bindingDefinition.responseParser
@@ -1211,22 +1430,21 @@ export class BpkgKit extends Kit {
 		return resolvedPath;
 	}
 
-	private async loadRegistry(): Promise<PersistedBpkgRegistry> {
+	private async loadRegistry(): Promise<RuntimeBpkgRegistry> {
 		try {
 			const payload = await fs.readFile(this.registryPath, "utf8");
 			const parsed = JSON.parse(payload) as Partial<PersistedBpkgRegistry>;
 			return {
 				boxes: Array.isArray(parsed.boxes)
 					? parsed.boxes.map((box) => {
-						const privilegeConfig = normalizePersistedBpkgBoxPrivilegeConfig(box);
-						return {
+						const privilegeConfig = normalizePersistedBpkgBoxPrivilegeConfig(box as Partial<BpkgBoxRecord>);
+						return applyBpkgBoxPrivilegeConfig({
 							...box,
-							...privilegeConfig,
 							packages: Array.isArray(box.packages) ? normalizeStringArray(box.packages) : [],
 							rootPath: typeof box.rootPath === "string" && box.rootPath.length > 0
 								? box.rootPath
 								: this.resolveBoxRootPath(box.id),
-						};
+						}, privilegeConfig);
 					})
 					: [],
 				defaultBoxId: typeof parsed.defaultBoxId === "string" ? parsed.defaultBoxId : null,
@@ -1241,7 +1459,11 @@ export class BpkgKit extends Kit {
 
 	private async persistRegistry(): Promise<void> {
 		await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
-		await fs.writeFile(this.registryPath, JSON.stringify(this.registry, null, 2), "utf8");
+		const persistedRegistry: PersistedBpkgRegistry = {
+			boxes: this.registry.boxes.map((box) => toPersistedBpkgBoxRecord(box)),
+			defaultBoxId: this.registry.defaultBoxId,
+		};
+		await fs.writeFile(this.registryPath, JSON.stringify(persistedRegistry, null, 2), "utf8");
 	}
 
 	private upsertBox(box: BpkgBoxRecord): void {
@@ -1267,12 +1489,11 @@ export class BpkgKit extends Kit {
 		const shellPath = path.join(box.rootPath, "usr", "bin", "bash");
 		const hasShell = await fs.stat(shellPath).then(() => true).catch(() => false);
 		const privilegeConfig = normalizePersistedBpkgBoxPrivilegeConfig(box);
-		return {
+		return applyBpkgBoxPrivilegeConfig({
 			...box,
-			...privilegeConfig,
 			packages: normalizeStringArray(box.packages),
 			status: hasShell ? (box.status === "error" ? "ready" : box.status === "building" ? "ready" : box.status) : "missing",
-		};
+		}, privilegeConfig);
 	}
 
 	private resolveBoxRootPath(boxId: string): string {
@@ -1324,18 +1545,21 @@ export class BpkgKit extends Kit {
 		writableRoot: boolean,
 	): string[] {
 		const bwrapExecutable = this.assertBwrapSupported();
-		const sandboxPolicy = targetBox.sandboxPolicyExtensions;
 		const envArgs = Object.entries(execution.env ?? {}).flatMap(([key, value]) => [
 			"--setenv",
 			key,
 			value,
 		]);
+		const namespaceArgs = buildBwrapNamespaceArgs(targetBox);
+		const userName = targetBox.unshareUser
+			? "root"
+			: normalizeOptionalString(process.env.USER, "USER") ?? "user";
 		return [
 			bwrapExecutable,
 			writableRoot ? "--bind" : "--ro-bind",
 			targetBox.rootPath,
 			"/",
-			...buildBwrapSandboxArgs(sandboxPolicy, { supportsSysfs: this.bwrapSupportsSysfs }),
+			...buildBwrapSandboxArgs(targetBox),
 			"--tmpfs",
 			"/tmp",
 			"--bind",
@@ -1349,17 +1573,12 @@ export class BpkgKit extends Kit {
 			"/root",
 			"--setenv",
 			"USER",
-			"root",
-			"--uid",
-			"0",
-			"--gid",
-			"0",
+			userName,
+			...(targetBox.unshareUser ? ["--uid", "0", "--gid", "0"] : []),
 			...(execution.cwd ? ["--chdir", execution.cwd] : ["--chdir", "/root"]),
 			...envArgs,
-			"--unshare-all",
-			...(sandboxPolicy.shareNetwork ? ["--share-net"] : []),
-			"--hostname",
-			`${targetBox.id}-box`,
+			...namespaceArgs,
+			...(targetBox.unshareUts ? ["--hostname", `${targetBox.id}-box`] : []),
 			...this.buildBoxPayloadCommand(execution),
 		];
 	}
@@ -1401,12 +1620,17 @@ export class BpkgKit extends Kit {
 		box: BpkgBoxRecord,
 		execution: ExecuteBoxCommandOptions,
 	): BpkgPrivilegeLevel {
-		const requestedPrivilegeLevel = execution.privilegeLevel ?? (execution.writableRoot ? "sandbox-rw" : box.defaultPrivilegeLevel);
-		if (!box.allowedPrivilegeLevels.includes(requestedPrivilegeLevel)) {
+		const requestedPrivilegeLevel = execution.privilegeLevel
+			?? (execution.writableRoot ? "sandbox-rw" : box.defaultSandboxRw ? "sandbox-rw" : "sandbox-ro");
+		const allowedLevels = listAllowedBpkgPrivilegeLevels(box);
+		const isAllowed = requestedPrivilegeLevel === "sandbox-ro"
+			|| (requestedPrivilegeLevel === "sandbox-rw" && box.allowSandboxRw)
+			|| (requestedPrivilegeLevel === "host-privileged" && box.allowHostPrivileged);
+		if (!isAllowed) {
 			throw new BpkgUnsupportedError(
 				[
 					`bpkg box '${box.id}' does not allow privilege level '${requestedPrivilegeLevel}'.`,
-					`Allowed levels: ${box.allowedPrivilegeLevels.join(", ")}.`,
+					`Allowed levels: ${allowedLevels.join(", ")}.`,
 				].join(" "),
 			);
 		}
@@ -1532,32 +1756,6 @@ export class BpkgKit extends Kit {
 			platform: process.platform,
 			sudoExecutable: resolveAvailableManifestDependencyCommand(SUDO_DEPENDENCY_ID),
 		};
-	}
-
-	private async detectBwrapSysfsSupport(): Promise<boolean> {
-		const bwrapExecutable = this.hostInfo.bwrapExecutable;
-		if (!bwrapExecutable) {
-			return false;
-		}
-
-		const child = Bun.spawn({
-			cmd: [bwrapExecutable, "--help"],
-			cwd: process.cwd(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-
-		const [exitCode, stdout, stderr] = await Promise.all([
-			child.exited,
-			readOutput(child.stdout),
-			readOutput(child.stderr),
-		]);
-		if (exitCode !== 0) {
-			return false;
-		}
-
-		return /(^|\s)--sysfs(\s|$)/mu.test(`${stdout}\n${stderr}`);
 	}
 
 	private assertArchCompatible(): void {
@@ -1725,7 +1923,12 @@ export class BpkgKit extends Kit {
 	private async runCommand(
 		boxId: string,
 		command: readonly string[],
-		options: { allowFailure?: boolean; commandHandlers?: BpkgCommandStreamHandlers; runner: HostRunner },
+		options: {
+			acceptedExitCodes?: readonly number[];
+			allowFailure?: boolean;
+			commandHandlers?: BpkgCommandStreamHandlers;
+			runner: HostRunner;
+		},
 	): Promise<BpkgCommandResult> {
 		const child = Bun.spawn({
 			cmd: [...command],
@@ -1737,8 +1940,8 @@ export class BpkgKit extends Kit {
 
 		const [exitCode, stdout, stderr] = await Promise.all([
 			child.exited,
-			readOutputWithHandler(child.stdout, options.commandHandlers?.onStdoutChunk),
-			readOutputWithHandler(child.stderr, options.commandHandlers?.onStderrChunk),
+			readOutputWithHandler(child.stdout, options.commandHandlers?.onStdoutChunk, "stdout"),
+			readOutputWithHandler(child.stderr, options.commandHandlers?.onStderrChunk, "stderr"),
 		]);
 
 		const result: BpkgCommandResult = {
@@ -1750,7 +1953,11 @@ export class BpkgKit extends Kit {
 			stdout,
 		};
 
-		if (exitCode !== 0 && !options.allowFailure) {
+		if (
+			exitCode !== 0
+			&& !options.allowFailure
+			&& !(options.acceptedExitCodes?.includes(exitCode) ?? false)
+		) {
 			throw new BpkgCommandError(result);
 		}
 
@@ -1759,11 +1966,16 @@ export class BpkgKit extends Kit {
 
 	private async runPreparedBoxCommand(
 		preparedExecution: BoxCommandExecution,
-		options: { allowFailure?: boolean; commandHandlers?: BpkgCommandStreamHandlers } = {},
+		options: {
+			acceptedExitCodes?: readonly number[];
+			allowFailure?: boolean;
+			commandHandlers?: BpkgCommandStreamHandlers;
+		} = {},
 	): Promise<BpkgCommandResult> {
 		let caughtError: unknown;
 		try {
 			return await this.runCommand(preparedExecution.box.id, preparedExecution.argv, {
+				acceptedExitCodes: options.acceptedExitCodes,
 				allowFailure: options.allowFailure,
 				commandHandlers: options.commandHandlers,
 				runner: preparedExecution.runner,

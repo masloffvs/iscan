@@ -71,6 +71,42 @@ export type ModuleConsoleParam = {
 	jsDescriptorName?: string;
 };
 
+export type ModulePaletteMetadata = {
+	title?: string;
+	keywords?: readonly string[];
+	hidden?: boolean;
+	subInput?: {
+		label?: string;
+		placeholder?: string;
+		submitLabel?: string;
+	};
+};
+
+export type ModulePaletteCommand = {
+	id: string;
+	aliases: string[];
+	category: string;
+	title: string;
+	description: string | null;
+	keywords: string[];
+	defaultParameterName: string | null;
+	consoleParams: ModuleConsoleParam[];
+	hasRequiredParams: boolean;
+	subInput: {
+		label: string | null;
+		placeholder: string | null;
+		submitLabel: string | null;
+	} | null;
+};
+
+export type NotebookTypeOverlayDefinition = {
+	path: string;
+};
+
+export function defineNotebookTypeOverlay(path: string): NotebookTypeOverlayDefinition {
+	return { path };
+}
+
 export type ConfigurableModuleDefinition<
 	TParams = unknown,
 	TResult = unknown,
@@ -89,6 +125,8 @@ export type ModuleDefinition<
 	aliases?: readonly string[];
 	category?: string;
 	description?: string;
+	notebookTypeOverlay?: NotebookTypeOverlayDefinition;
+	palette?: ModulePaletteMetadata;
 	executor: ModuleExecutor<TParams, TResult, THelpers>;
 	defaultResolver?: ModuleDefaultResolver<TParams>;
 	defaultParameterName?: string;

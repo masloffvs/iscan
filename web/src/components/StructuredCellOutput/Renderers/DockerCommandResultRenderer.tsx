@@ -64,7 +64,7 @@ export default function DockerCommandResultRenderer({
         <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#8c8c94]">
           Command
         </div>
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#8fd8ff]">
+        <pre className="dense-scroll overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#8fd8ff]">
           {commandLabel}
         </pre>
       </div>

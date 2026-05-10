@@ -120,6 +120,11 @@ type SqlTableAlias = {
 	description: string;
 };
 
+type SqlReferencedTable = {
+	table: SqlTableSummary;
+	qualifiers: Set<string>;
+};
+
 const SQL_KEYWORDS = [
 	"SELECT",
 	"FROM",
@@ -144,8 +149,10 @@ const SQL_KEYWORDS = [
 	"COUNT(*)",
 ] as const;
 
+const SQL_KEYWORD_SET = new Set(SQL_KEYWORDS.map((keyword) => keyword.toUpperCase()));
+
 const MAX_SUGGESTIONS = 8;
-const MAX_RESULT_ROWS = 40;
+const MAX_RESULT_ROWS = 256;
 const MAX_SAMPLE_VALUES = 3;
 const MAX_TRANSCRIPT_ITEMS = 120;
 const SQL_TABLE_ALIASES: readonly SqlTableAlias[] = [
@@ -410,9 +417,13 @@ export function findTableByName(schema: SqlSchemaSnapshot, tableName: string): S
 	return schema.tables.find((table) => table.name === normalized) ?? null;
 }
 
-function extractReferencedTables(input: string, schema: SqlSchemaSnapshot): SqlTableSummary[] {
-	const references = new Map<string, SqlTableSummary>();
-	const pattern = /\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:"([^"]+)"|`([^`]+)`|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))/giu;
+function isSqlKeyword(value: string): boolean {
+	return SQL_KEYWORD_SET.has(value.trim().toUpperCase());
+}
+
+function extractReferencedTableBindings(input: string, schema: SqlSchemaSnapshot): SqlReferencedTable[] {
+	const references = new Map<string, SqlReferencedTable>();
+	const pattern = /\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:"([^"]+)"|`([^`]+)`|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/giu;
 
 	for (const match of input.matchAll(pattern)) {
 		const tableName = match[1] ?? match[2] ?? match[3] ?? match[4];
@@ -421,12 +432,64 @@ function extractReferencedTables(input: string, schema: SqlSchemaSnapshot): SqlT
 		}
 
 		const table = findTableByName(schema, tableName);
-		if (table) {
-			references.set(table.name, table);
+		if (!table) {
+			continue;
 		}
+
+		const existing = references.get(table.name);
+		const reference = existing ?? {
+			table,
+			qualifiers: new Set<string>(),
+		};
+
+		reference.qualifiers.add(table.name.toLowerCase());
+		reference.qualifiers.add(tableName.toLowerCase());
+
+		const logicalAlias = getAliasForTable(table.name, schema)?.alias;
+		if (logicalAlias) {
+			reference.qualifiers.add(logicalAlias.toLowerCase());
+		}
+
+		const explicitAlias = match[5]?.trim();
+		if (explicitAlias && !isSqlKeyword(explicitAlias)) {
+			reference.qualifiers.add(explicitAlias.toLowerCase());
+		}
+
+		references.set(table.name, reference);
 	}
 
 	return [...references.values()];
+}
+
+function extractReferencedTables(input: string, schema: SqlSchemaSnapshot): SqlTableSummary[] {
+	return extractReferencedTableBindings(input, schema).map((reference) => reference.table);
+}
+
+function resolveQualifiedColumnContext(input: string, schema: SqlSchemaSnapshot): { prefix: string; tables: SqlTableSummary[] } | null {
+	const qualifiedMatch = input.match(/([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_]*)$/u);
+	if (!qualifiedMatch) {
+		return null;
+	}
+
+	const qualifier = (qualifiedMatch[1] ?? "").toLowerCase();
+	const prefix = (qualifiedMatch[2] ?? "").toLowerCase();
+	const tables = extractReferencedTableBindings(input, schema)
+		.filter((reference) => reference.qualifiers.has(qualifier))
+		.map((reference) => reference.table);
+
+	if (tables.length > 0) {
+		return { prefix, tables };
+	}
+
+	const directTable = findTableByName(schema, qualifier);
+	if (!directTable) {
+		return null;
+	}
+
+	return {
+		prefix,
+		tables: [directTable],
+	};
 }
 
 function buildDefaultSnippets(schema: SqlSchemaSnapshot): SqlSuggestion[] {
@@ -562,6 +625,25 @@ function buildSuggestions(input: string, schema: SqlSchemaSnapshot): SqlSuggesti
 						insertText: `'${value.replace(/'/gu, "''")}'`,
 						detail: `${table.name}.${columnName} sample value`,
 						kind: "value",
+					});
+				}
+			}
+		}
+		if (suggestions.length > 0) {
+			return suggestions.slice(0, MAX_SUGGESTIONS);
+		}
+	}
+
+	const qualifiedColumnContext = resolveQualifiedColumnContext(input, schema);
+	if (qualifiedColumnContext) {
+		for (const table of qualifiedColumnContext.tables) {
+			for (const column of table.columns) {
+				if (column.name.toLowerCase().startsWith(qualifiedColumnContext.prefix)) {
+					pushSuggestion({
+						label: column.name,
+						insertText: column.name,
+						detail: `${table.name} • ${column.type || "untyped"}`,
+						kind: "column",
 					});
 				}
 			}

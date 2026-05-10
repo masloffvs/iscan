@@ -6,6 +6,7 @@ import { CloakKit } from "../../kits";
 import { createTableEntity, createTextEntity, type OutputEntity } from "../../primitives";
 import { InvalidParamsError } from "../errors";
 import { defineExecutor, defineModule, type ModuleConsoleParam, type ModuleExecutionContext } from "../module";
+import { DISCOVERY_NOTEBOOK_TYPE_OVERLAY } from "./notebook-overlay";
 
 const DEFAULT_TOP = 100;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -833,6 +834,7 @@ function definePullModule(id: string, description: string) {
 		aliases: id === "cloudflare/radar/domains/pull" ? ["clouflare/radar/domains/pull"] : undefined,
 		category: "discovery",
 		description,
+		notebookTypeOverlay: DISCOVERY_NOTEBOOK_TYPE_OVERLAY,
 		consoleParams: RADAR_PULL_CONSOLE_PARAMS,
 		executor: pullExecutor,
 	}).useDefault("top");
@@ -844,6 +846,7 @@ function defineSearchModule(id: string, description: string) {
 		aliases: id === "cloudflare/radar/domains/search" ? ["clouflare/radar/domains/search"] : undefined,
 		category: "discovery",
 		description,
+		notebookTypeOverlay: DISCOVERY_NOTEBOOK_TYPE_OVERLAY,
 		consoleParams: RADAR_SEARCH_CONSOLE_PARAMS,
 		executor: searchExecutor,
 	}).useDefault("pattern");

@@ -3,6 +3,7 @@ import {
 	createQemuPresetDetailReport,
 	ensureQemuKit,
 	parseOptionalString,
+	QEMU_NOTEBOOK_TYPE_OVERLAY,
 	resolveQemuPreset,
 } from "./qemu-shared";
 
@@ -14,6 +15,7 @@ export const qemuGetModule = defineModule<QemuGetParams>({
 	id: "kits/qemu/get",
 	category: "kits",
 	description: "Inspect one saved QEMU preset by id or unique name",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: [
 		{
 			name: "target",

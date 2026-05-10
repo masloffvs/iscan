@@ -3,6 +3,7 @@ import {
 	createQemuPresetDeleteReport,
 	ensureQemuKit,
 	parseOptionalString,
+	QEMU_NOTEBOOK_TYPE_OVERLAY,
 	resolveQemuPreset,
 } from "./qemu-shared";
 
@@ -14,6 +15,7 @@ export const qemuDeleteModule = defineModule<QemuDeleteParams>({
 	id: "kits/qemu/delete",
 	category: "kits",
 	description: "Delete a saved QEMU preset by id or unique name",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: [
 		{
 			name: "target",

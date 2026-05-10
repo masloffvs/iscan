@@ -1,7 +1,7 @@
 import { defineExecutor, defineModule } from "../module";
 import { InvalidParamsError } from "../errors";
 import { applyProxyBatchText, createProxyBatchReport } from "./proxy-import-shared";
-import { ensureProxyKit, parseOptionalProxyType, parseOptionalString, PROXY_TYPE_VALUES } from "./proxy-shared";
+import { ensureProxyKit, parseOptionalProxyType, parseOptionalString, PROXY_NOTEBOOK_TYPE_OVERLAY, PROXY_TYPE_VALUES } from "./proxy-shared";
 
 export type ProxyReplaceParams = {
 	text?: string;
@@ -28,6 +28,7 @@ export const proxyReplaceModule = defineModule<ProxyReplaceParams>({
 	id: "kits/proxy/replace",
 	category: "kits",
 	description: "Replace the saved proxy inventory with notebook-safe free-form batch parsing",
+	notebookTypeOverlay: PROXY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: PROXY_REPLACE_CONSOLE_PARAMS,
 	executor: defineExecutor<ProxyReplaceParams>(async (context) => {
 		const text = parseOptionalString(context.params.text, "text");

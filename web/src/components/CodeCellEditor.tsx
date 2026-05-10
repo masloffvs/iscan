@@ -8,7 +8,6 @@ import {
   type CompletionContext,
   type CompletionResult,
 } from "@codemirror/autocomplete";
-import { javascript } from "@codemirror/lang-javascript";
 import { sql as sqlLanguage } from "@codemirror/lang-sql";
 import {
   githubDarkInit,
@@ -18,13 +17,14 @@ import {
   type RemoteNotebookCellLanguage,
   type RemoteNotebookCompletionItem,
 } from "../api/client";
+import NotebookJavascriptEditor from "./NotebookJavascriptEditor";
 
 const editorTheme = githubDarkInit({
   settings: {
     background: "transparent",
     gutterBackground: "transparent",
     caret: "#c6c6c6",
-    fontFamily: "monospace",
+    fontFamily: "var(--iscan-editor-font-family)",
   },
 });
 
@@ -36,41 +36,8 @@ const editorBasicSetup = {
   completionKeymap: true,
 } as const;
 
-const RUNTIME_COMPLETION_WINDOW = 512;
 const RUNTIME_COMPLETION_CACHE_LIMIT = 64;
 const RUNTIME_COMPLETION_DELAY_MS = 180;
-const IDENTIFIER_CHARACTER_PATTERN = /[A-Za-z0-9_$]/u;
-
-type RuntimeFragmentMatch = {
-  fragment: string;
-  from: number;
-};
-
-function findRuntimeFragment(source: string, cursorOffset: number): RuntimeFragmentMatch | null {
-  const sourceStart = Math.max(0, cursorOffset - RUNTIME_COMPLETION_WINDOW);
-  const windowText = source.slice(sourceStart, cursorOffset);
-
-  const relativeIndex = windowText.lastIndexOf("$");
-  if (relativeIndex < 0) {
-    return null;
-  }
-
-  const absoluteIndex = sourceStart + relativeIndex;
-  const previousCharacter = absoluteIndex > 0 ? source[absoluteIndex - 1] : "";
-  if (previousCharacter && IDENTIFIER_CHARACTER_PATTERN.test(previousCharacter)) {
-    return null;
-  }
-
-  const fragment = source.slice(absoluteIndex, cursorOffset);
-  if (!fragment.startsWith("$.") && !fragment.startsWith("$vm") && !fragment.startsWith("$axios")) {
-    return null;
-  }
-
-  return {
-    fragment,
-    from: absoluteIndex,
-  };
-}
 
 function toCodeMirrorCompletion(item: RemoteNotebookCompletionItem): Completion {
   return {
@@ -103,6 +70,11 @@ function getNotebookCellLanguage(language?: string): RemoteNotebookCellLanguage 
 
 function findSqlCompletionStart(source: string, cursorOffset: number): number {
   const prefix = source.slice(0, cursorOffset);
+  const qualifiedColumnMatch = prefix.match(/[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_]*)$/u);
+  if (qualifiedColumnMatch) {
+    return cursorOffset - (qualifiedColumnMatch[1]?.length ?? 0);
+  }
+
   const dotCommandMatch = prefix.match(/(\.[A-Za-z]*)$/u);
   if (dotCommandMatch?.[1]) {
     return cursorOffset - dotCommandMatch[1].length;
@@ -140,21 +112,37 @@ type CodeCellEditorProps = {
   value: string;
   language?: string;
   sessionCode?: string;
+  cellId?: string;
   onChange: (value: string) => void;
   onRun?: () => void;
 };
 
-export default function CodeCellEditor({ value, language, sessionCode, onChange, onRun }: CodeCellEditorProps) {
+export default function CodeCellEditor({
+  value,
+  language,
+  sessionCode,
+  cellId,
+  onChange,
+  onRun,
+}: CodeCellEditorProps) {
   const cellLanguage = getNotebookCellLanguage(language);
+
+  if (cellLanguage !== "sql") {
+    return (
+      <NotebookJavascriptEditor
+        cellId={cellId}
+        value={value}
+        sessionCode={sessionCode}
+        onChange={onChange}
+        onRun={onRun}
+      />
+    );
+  }
 
   const extensions = useMemo<Extension[]>(() => {
     const completionCache = new Map<string, readonly RemoteNotebookCompletionItem[]>();
-    const languageExtensions: Extension[] = cellLanguage === "sql"
-      ? [sqlLanguage()]
-      : [javascript({ jsx: true })];
-
     const baseExtensions = [
-      ...languageExtensions,
+      sqlLanguage(),
       keymap.of([
         {
           key: "Mod-Shift-Enter",
@@ -173,77 +161,27 @@ export default function CodeCellEditor({ value, language, sessionCode, onChange,
       return baseExtensions;
     }
 
-    if (cellLanguage === "sql") {
-      const sqlCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
-        const source = context.state.doc.sliceString(0, context.pos);
-        const cachedItems = completionCache.get(source);
-        if (cachedItems) {
-          return buildCompletionResult(findSqlCompletionStart(source, context.pos), context.pos, cachedItems);
-        }
-
-        const abortController = new AbortController();
-        context.addEventListener("abort", () => abortController.abort(), { onDocChange: true });
-
-        try {
-          const items = await getRemoteNotebookCompletions(sessionCode, source, {
-            language: "sql",
-            signal: abortController.signal,
-          });
-          if (context.aborted) {
-            return null;
-          }
-
-          rememberCompletionItems(completionCache, source, items);
-          return buildCompletionResult(findSqlCompletionStart(source, context.pos), context.pos, items);
-        } catch (error) {
-          if (isAbortError(error) || context.aborted) {
-            return null;
-          }
-
-          return null;
-        }
-      };
-
-      return [
-        ...baseExtensions,
-        autocompletion({
-          activateOnTyping: true,
-          activateOnTypingDelay: RUNTIME_COMPLETION_DELAY_MS,
-          override: [sqlCompletionSource],
-        }),
-      ];
-    }
-
-    const runtimeCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
+    const sqlCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
       const source = context.state.doc.sliceString(0, context.pos);
-      const fragmentMatch = findRuntimeFragment(source, context.pos);
-      if (!fragmentMatch) {
-        return null;
-      }
-
-      const cachedItems = completionCache.get(fragmentMatch.fragment);
+      const cachedItems = completionCache.get(source);
       if (cachedItems) {
-        return buildCompletionResult(fragmentMatch.from, context.pos, cachedItems);
+        return buildCompletionResult(findSqlCompletionStart(source, context.pos), context.pos, cachedItems);
       }
 
       const abortController = new AbortController();
       context.addEventListener("abort", () => abortController.abort(), { onDocChange: true });
 
       try {
-        const items = await getRemoteNotebookCompletions(
-          sessionCode,
-          fragmentMatch.fragment,
-          {
-            language: "javascript",
-            signal: abortController.signal,
-          },
-        );
+        const items = await getRemoteNotebookCompletions(sessionCode, source, {
+          language: "sql",
+          signal: abortController.signal,
+        });
         if (context.aborted) {
           return null;
         }
 
-        rememberCompletionItems(completionCache, fragmentMatch.fragment, items);
-        return buildCompletionResult(fragmentMatch.from, context.pos, items);
+        rememberCompletionItems(completionCache, source, items);
+        return buildCompletionResult(findSqlCompletionStart(source, context.pos), context.pos, items);
       } catch (error) {
         if (isAbortError(error) || context.aborted) {
           return null;
@@ -258,14 +196,14 @@ export default function CodeCellEditor({ value, language, sessionCode, onChange,
       autocompletion({
         activateOnTyping: true,
         activateOnTypingDelay: RUNTIME_COMPLETION_DELAY_MS,
-        override: [runtimeCompletionSource],
+        override: [sqlCompletionSource],
       }),
     ];
-  }, [cellLanguage, sessionCode, onRun]);
+  }, [sessionCode, onRun]);
 
   return (
     <CodeMirror
-      className="[&_.cm-editor]:rounded-[10px] [&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-focused]:outline-none [&_.cm-gutters]:rounded-l-[10px] [&_.cm-gutters]:border-0 [&_.cm-gutters]:bg-transparent [&_.cm-scroller]:rounded-[10px]"
+      className="notebook-code-editor [&_.cm-editor]:rounded-[10px] [&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-focused]:outline-none [&_.cm-gutters]:rounded-l-[10px] [&_.cm-gutters]:border-0 [&_.cm-gutters]:bg-transparent [&_.cm-scroller]:rounded-[10px]"
       value={value}
       theme={editorTheme}
       onChange={onChange}

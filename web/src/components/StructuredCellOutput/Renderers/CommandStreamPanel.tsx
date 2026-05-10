@@ -19,7 +19,7 @@ export default function CommandStreamPanel({
   }
 
   return (
-    <pre className={`overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed ${toneClassName(tone)}`}>
+    <pre className={`dense-scroll overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed ${toneClassName(tone)}`}>
       {text}
     </pre>
   );

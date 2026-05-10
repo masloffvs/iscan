@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { jsonSchema, stepCountIs, tool, type ModelMessage } from "ai";
+import { jsonSchema, stepCountIs, tool } from "ai";
 import { Box, Text, useInput } from "ink";
 
 import { formatAiConnectionLabel, type AiKit } from "../../kits";
@@ -9,19 +9,18 @@ import { defineExecutor, defineModule, getModuleCategory, type InteractiveApplic
 import {
 	ensureAiKit,
 	formatModuleResultAsText,
+	type AiChatHistoryMessage,
+	type AiChatReply,
+	buildAiSystemPrompt,
 	parseJson,
 	parseOptionalBoolean,
 	parseOptionalNumber,
 	parseOptionalString,
+	requestAiTextReply,
 	resolveChatConnection,
 } from "./ai-shared";
 
-type ChatRole = "system" | "user" | "assistant";
-
-type ChatTranscriptMessage = {
-	role: ChatRole;
-	text: string;
-};
+type ChatTranscriptMessage = AiChatHistoryMessage;
 
 type AiChatParams = {
 	connection?: string;
@@ -30,16 +29,6 @@ type AiChatParams = {
 	temperature?: number | string;
 	maxOutputTokens?: number | string;
 	enableTools?: boolean | string;
-};
-
-type AiChatReply = {
-	text: string;
-	usage?: {
-		inputTokens?: number;
-		outputTokens?: number;
-		totalTokens?: number;
-	};
-	finishReason?: string | null;
 };
 
 type AiChatAppProps = InteractiveApplicationProps & {
@@ -170,15 +159,6 @@ function formatUsage(reply: AiChatReply): string {
 		`total=${reply.usage.totalTokens ?? 0}`,
 		reply.finishReason ? `finish=${reply.finishReason}` : undefined,
 	].filter(Boolean).join(" • ");
-}
-
-function toModelMessages(messages: readonly ChatTranscriptMessage[]): ModelMessage[] {
-	return messages
-		.filter(message => message.role !== "system")
-		.map(message => ({
-			role: message.role,
-			content: message.text,
-		}));
 }
 
 function AiChatApplication({
@@ -393,32 +373,16 @@ async function requestAiReply(options: {
 	enableTools: boolean;
 }): Promise<AiChatReply> {
 	const tools = options.enableTools ? buildRuntimeTools(options.context) : undefined;
-	const result = await options.kit.generateText({
+	return await requestAiTextReply({
+		kit: options.kit,
 		connection: options.connection,
 		system: options.system,
-		messages: toModelMessages(options.history),
+		history: options.history,
 		temperature: options.temperature,
 		maxOutputTokens: options.maxOutputTokens,
 		tools,
 		stopWhen: tools ? stepCountIs(6) : undefined,
 	});
-
-	return {
-		text: result.text?.trim() || "<empty response>",
-		usage: result.usage,
-		finishReason: result.finishReason ? String(result.finishReason) : null,
-	};
-}
-
-function buildSystemPrompt(systemPrompt: string | undefined): string {
-	const defaultPrompt = [
-		"You are $ai inside the iscan console.",
-		"You can inspect modules and run them with tools when needed.",
-		"Prefer list_modules and describe_module before run_module when the correct module or params are unclear.",
-		"When you use run_module, summarize the result for the operator instead of dumping raw JSON unless they ask for it.",
-	].join(" ");
-
-	return systemPrompt ? `${defaultPrompt}\n\n${systemPrompt}` : defaultPrompt;
 }
 
 export { type AiChatParams };
@@ -439,7 +403,7 @@ export const aiChatModule = defineModule<AiChatParams>({
 		const kit = await ensureAiKit(context);
 		const connectionTarget = parseOptionalString(context.params.connection, "connection");
 		const connection = resolveChatConnection(kit, connectionTarget);
-		const systemPrompt = buildSystemPrompt(parseOptionalString(context.params.system, "system"));
+		const systemPrompt = buildAiSystemPrompt(parseOptionalString(context.params.system, "system"), { enableTools: true });
 		const temperature = parseOptionalNumber(context.params.temperature, "temperature");
 		const maxOutputTokens = parseOptionalNumber(context.params.maxOutputTokens, "maxOutputTokens");
 		const enableTools = parseOptionalBoolean(context.params.enableTools, "enableTools") ?? true;

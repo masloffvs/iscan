@@ -44,7 +44,7 @@ export default function NmapParsedRenderer({
         <div className="text-[11px] leading-relaxed text-[#a0a0a8]">{summaryText}</div>
       )}
 
-      <div className="overflow-x-auto">
+      <div className="dense-scroll overflow-x-auto">
         <table className="min-w-full border-collapse font-mono text-[11px] leading-relaxed text-[#e4e4e7]">
           <thead>
             <tr>

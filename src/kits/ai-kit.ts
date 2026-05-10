@@ -69,6 +69,53 @@ export type AiKitOptions = {
 	repositoryPath?: string;
 };
 
+export type AiConnectionScope = "repository" | "memory";
+
+export type AiConnectionSaveOptions = {
+	persist?: boolean;
+};
+
+export type AiConnectionDeleteOptions = {
+	scope?: AiConnectionScope | "all";
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isStoredAiConnection(value: unknown): value is AiConnection {
+	if (!isPlainObject(value)) {
+		return false;
+	}
+
+	return typeof value.provider === "string"
+		&& typeof value.model === "string"
+		&& (typeof value.id === "string" || typeof value.name === "string");
+}
+
+function normalizeStoredConnections(value: unknown): AiConnection[] {
+	if (Array.isArray(value)) {
+		return value.filter(isStoredAiConnection);
+	}
+
+	if (isPlainObject(value) && "connections" in value) {
+		const nestedConnections = value.connections;
+		if (Array.isArray(nestedConnections)) {
+			return nestedConnections.filter(isStoredAiConnection);
+		}
+
+		if (isStoredAiConnection(nestedConnections)) {
+			return [nestedConnections];
+		}
+	}
+
+	if (isStoredAiConnection(value)) {
+		return [value];
+	}
+
+	return [];
+}
+
 function normalizeConnectionId(value: string): string {
 	const normalized = value
 		.trim()
@@ -115,7 +162,8 @@ export function formatAiConnectionLabel(connection: AiConnection): string {
 
 export class AiKit extends Kit {
 	private readonly repositoryPath: string;
-	private connections: AiConnection[] = [];
+	private repositoryConnections: AiConnection[] = [];
+	private inMemoryConnections: AiConnection[] = [];
 	private selectedConnectionId: string | null;
 
 	constructor(options: AiKitOptions = {}) {
@@ -129,9 +177,11 @@ export class AiKit extends Kit {
 			await fs.mkdir(path.dirname(this.repositoryPath), { recursive: true });
 			const raw = await fs.readFile(this.repositoryPath, "utf-8");
 			const parsed = JSON.parse(raw);
-			this.connections = Array.isArray(parsed) ? parsed as AiConnection[] : [];
+			this.repositoryConnections = normalizeStoredConnections(parsed);
+			this.inMemoryConnections = [];
 		} catch {
-			this.connections = [];
+			this.repositoryConnections = [];
+			this.inMemoryConnections = [];
 		}
 	}
 
@@ -140,7 +190,7 @@ export class AiKit extends Kit {
 	}
 
 	listConnections(): AiConnection[] {
-		return [...this.connections].sort((left, right) => left.name.localeCompare(right.name));
+		return [...this.getAllConnections()].sort((left, right) => left.name.localeCompare(right.name));
 	}
 
 	getSelectedConnectionId(): string | null {
@@ -152,30 +202,11 @@ export class AiKit extends Kit {
 			return null;
 		}
 
-		return this.connections.find(connection => connection.id === this.selectedConnectionId) ?? null;
+		return this.getAllConnections().find(connection => connection.id === this.selectedConnectionId) ?? null;
 	}
 
 	resolveConnectionOrNull(target: string): AiConnection | null {
-		const normalizedTarget = target.trim();
-		if (normalizedTarget.length === 0) {
-			return null;
-		}
-
-		const byId = this.connections.find(connection => connection.id === normalizedTarget);
-		if (byId) {
-			return byId;
-		}
-
-		const byName = this.connections.filter(connection => connection.name === normalizedTarget);
-		if (byName.length === 1) {
-			return byName[0] ?? null;
-		}
-
-		if (byName.length > 1) {
-			throw new Error(`AI connection target is ambiguous: ${normalizedTarget}`);
-		}
-
-		return null;
+		return this.resolveConnectionInListOrNull(target, this.getAllConnections());
 	}
 
 	resolveConnection(target: string): AiConnection {
@@ -187,15 +218,14 @@ export class AiKit extends Kit {
 		throw new Error(`AI connection '${target}' not found in ${this.repositoryPath}.`);
 	}
 
-	async saveConnection(input: AiConnectionUpsertInput): Promise<AiConnection> {
+	async saveConnection(input: AiConnectionUpsertInput, options: AiConnectionSaveOptions = {}): Promise<AiConnection> {
+		const persist = options.persist !== false;
+		const scope: AiConnectionScope = persist ? "repository" : "memory";
 		const now = new Date().toISOString();
+		const inputId = input.id?.trim();
 		const inputName = input.name?.trim();
-		const existingConnection = input.id
-			? this.connections.find(connection => connection.id === input.id)
-			: inputName
-				? this.connections.find(connection => connection.name === inputName)
-				: undefined;
-		const nextId = existingConnection?.id ?? normalizeConnectionId(input.id || inputName || `${input.provider}-${input.model}`);
+		const existingConnection = this.findExistingConnectionForSave(inputId, inputName);
+		const nextId = existingConnection?.id ?? normalizeConnectionId(inputId || inputName || `${input.provider}-${input.model}`);
 		const nextName = inputName && inputName.length > 0 ? inputName : nextId;
 
 		const nextConnection: AiConnection = {
@@ -216,26 +246,54 @@ export class AiKit extends Kit {
 			meta: input.meta,
 		};
 
-		this.connections = existingConnection
-			? this.connections.map(connection => connection.id === existingConnection.id ? nextConnection : connection)
-			: [...this.connections, nextConnection];
-		await this.persistRepository();
+		await this.writeConnectionToScope(scope, nextConnection);
 		this.selectedConnectionId = nextConnection.id;
 		return nextConnection;
 	}
 
-	async deleteConnection(target: string): Promise<boolean> {
-		const connection = this.resolveConnectionOrNull(target);
+	async createConnection(input: AiConnectionUpsertInput, options: AiConnectionSaveOptions = {}): Promise<AiConnection> {
+		const inputId = input.id?.trim();
+		const inputName = input.name?.trim();
+
+		if (inputId && this.getAllConnections().some(connection => connection.id === inputId)) {
+			throw new Error(`AI connection '${inputId}' already exists.`);
+		}
+
+		if (inputName && this.getAllConnections().some(connection => connection.name === inputName)) {
+			throw new Error(`AI connection '${inputName}' already exists.`);
+		}
+
+		return await this.saveConnection(input, options);
+	}
+
+	async deleteConnection(target: string, options: AiConnectionDeleteOptions = {}): Promise<boolean> {
+		const scope = options.scope ?? "all";
+		const connection = this.resolveConnectionInListOrNull(target, this.getConnectionsForScope(scope));
 		if (!connection) {
 			return false;
 		}
 
-		this.connections = this.connections.filter(candidate => candidate.id !== connection.id);
-		if (this.selectedConnectionId === connection.id) {
+		const nextRepositoryConnections = scope === "memory"
+			? this.repositoryConnections
+			: this.repositoryConnections.filter(candidate => candidate.id !== connection.id);
+		const nextInMemoryConnections = scope === "repository"
+			? this.inMemoryConnections
+			: this.inMemoryConnections.filter(candidate => candidate.id !== connection.id);
+		const repositoryChanged = nextRepositoryConnections.length !== this.repositoryConnections.length;
+		const memoryChanged = nextInMemoryConnections.length !== this.inMemoryConnections.length;
+
+		this.repositoryConnections = nextRepositoryConnections;
+		this.inMemoryConnections = nextInMemoryConnections;
+
+		if (this.selectedConnectionId === connection.id && !this.getAllConnections().some(candidate => candidate.id === connection.id)) {
 			this.selectedConnectionId = null;
 		}
-		await this.persistRepository();
-		return true;
+
+		if (repositoryChanged) {
+			await this.persistRepository();
+		}
+
+		return repositoryChanged || memoryChanged;
 	}
 
 	selectConnection(target: string | null): AiConnection | null {
@@ -301,19 +359,97 @@ export class AiKit extends Kit {
 			return selectedConnection;
 		}
 
-		if (this.connections.length === 1) {
-			const onlyConnection = this.connections[0];
+		const connections = this.getAllConnections();
+		if (connections.length === 1) {
+			const onlyConnection = connections[0];
 			this.selectedConnectionId = onlyConnection?.id ?? null;
 			if (onlyConnection) {
 				return onlyConnection;
 			}
 		}
 
-		if (this.connections.length === 0) {
-			throw new Error(`$ai has no saved connections. Use $.kits.ai.connect({ name: "local", provider: "openai-compatible", model: "llama3.1" }) to create one.`);
+		if (connections.length === 0) {
+			throw new Error(`$ai has no saved or in-memory connections. Use $.kits.ai.connect({ name: "local", provider: "openai-compatible", model: "llama3.1" }) to create one.`);
 		}
 
 		throw new Error(`$ai requires a selected connection. Use $.kits.ai.list() or $.kits.ai.connect({ connection: "<id>" }).`);
+	}
+
+	private getAllConnections(): AiConnection[] {
+		return [...this.repositoryConnections, ...this.inMemoryConnections];
+	}
+
+	private getConnectionsForScope(scope: AiConnectionScope | "all"): AiConnection[] {
+		if (scope === "repository") {
+			return this.repositoryConnections;
+		}
+
+		if (scope === "memory") {
+			return this.inMemoryConnections;
+		}
+
+		return this.getAllConnections();
+	}
+
+	private resolveConnectionInListOrNull(target: string, connections: AiConnection[]): AiConnection | null {
+		const normalizedTarget = target.trim();
+		if (normalizedTarget.length === 0) {
+			return null;
+		}
+
+		const byId = connections.find(connection => connection.id === normalizedTarget);
+		if (byId) {
+			return byId;
+		}
+
+		const byName = connections.filter(connection => connection.name === normalizedTarget);
+		if (byName.length === 1) {
+			return byName[0] ?? null;
+		}
+
+		if (byName.length > 1) {
+			throw new Error(`AI connection target is ambiguous: ${normalizedTarget}`);
+		}
+
+		return null;
+	}
+
+	private findExistingConnectionForSave(connectionId: string | undefined, connectionName: string | undefined): AiConnection | undefined {
+		const connections = this.getAllConnections();
+
+		if (connectionId && connectionId.length > 0) {
+			return connections.find(connection => connection.id === connectionId);
+		}
+
+		if (!connectionName || connectionName.length === 0) {
+			return undefined;
+		}
+
+		const matches = connections.filter(connection => connection.name === connectionName);
+		if (matches.length > 1) {
+			throw new Error(`AI connection name is ambiguous: ${connectionName}`);
+		}
+
+		return matches[0];
+	}
+
+	private async writeConnectionToScope(scope: AiConnectionScope, nextConnection: AiConnection): Promise<void> {
+		this.repositoryConnections = this.repositoryConnections.filter(connection => connection.id !== nextConnection.id);
+		this.inMemoryConnections = this.inMemoryConnections.filter(connection => connection.id !== nextConnection.id);
+
+		if (scope === "repository") {
+			this.repositoryConnections = this.upsertConnection(this.repositoryConnections, nextConnection);
+			await this.persistRepository();
+			return;
+		}
+
+		this.inMemoryConnections = this.upsertConnection(this.inMemoryConnections, nextConnection);
+	}
+
+	private upsertConnection(connections: AiConnection[], nextConnection: AiConnection): AiConnection[] {
+		return connections.some(connection => connection.id === nextConnection.id)
+			? connections.map(connection => connection.id === nextConnection.id ? nextConnection : connection)
+			: [...connections, nextConnection];
 	}
 
 	private createLanguageModel(connection: AiConnection, overrideModel: string | undefined) {
@@ -370,7 +506,7 @@ export class AiKit extends Kit {
 
 	private async persistRepository(): Promise<void> {
 		await fs.mkdir(path.dirname(this.repositoryPath), { recursive: true });
-		await fs.writeFile(this.repositoryPath, JSON.stringify(this.connections, null, 2));
+		await fs.writeFile(this.repositoryPath, JSON.stringify(this.repositoryConnections, null, 2));
 	}
 }
 

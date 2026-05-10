@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import {
+  createRemoteNotebookExecutionStream,
   createRemotePackageBox,
+  listRemoteCommandPaletteCommands,
   createRemoteIsbFile,
+  createRemoteIsbFolder,
   createRemoteVmFsDirectory,
   deleteRemotePackageBox,
   deleteRemoteIsbFile,
@@ -9,6 +12,7 @@ import {
   downloadRemoteVmFsFile,
   evaluateRemoteCell,
   listRemoteIsbFiles,
+  listRemoteIsbFolders,
   listRemoteVmFs,
   moveRemoteIsbFile,
   openRemoteIsbFile,
@@ -25,23 +29,48 @@ import {
   launchRemoteCloakBrowser,
   stopRemoteCloakBrowser,
   navigateRemoteCloakBrowser,
+  type RemoteCommandPaletteCommand,
   type RemoteBrowserProfileEntry,
   type RemoteFsEntry,
   type RemoteIsbFileEntry,
+  type RemoteIsbFolderEntry,
   type RemotePackageBoxEntry,
+  type RemotePackageBoxPolicyInput,
   type RemotePackageHostInfo,
-  type RemotePackagePrivilegeLevel,
-  type RemotePackageSandboxPolicyExtensions,
   type RemoteSupportedPackageEntry,
   type RemoteNotebookCellLanguage,
   type RemoteNotebookSession,
   type RemoteNotebookCompletionItem,
+  type RemoteVmExecutionTask,
 } from "../api/client";
+import type { ApplicationInstance } from "../applications/application";
 import { getDefaultNotebook, type NotebookDocument, type NotebookCell } from "../data";
+import { NOTEBOOK_ORDER_STORAGE_KEY, readPersistedNotebookOrderState, type NotebookOrderState } from "../notebook-tree";
 
 export type InterfaceMode = "obsidian" | "graphite" | "terminal";
 export type KernelStatus = "idle" | "running" | "stopped";
 export type ServerStatus = "connecting" | "ready" | "error";
+export type RightPanelTab = "files" | "packages";
+
+const PERSISTED_SELECTED_FILE_KEY = "iscan:selected-file";
+const PERSISTED_RIGHT_PANEL_TAB_KEY = "iscan:right-panel-tab";
+
+function readPersistedSelectedFileId(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return window.localStorage.getItem(PERSISTED_SELECTED_FILE_KEY) ?? "";
+}
+
+function readPersistedRightPanelTab(): RightPanelTab {
+  if (typeof window === "undefined") {
+    return "files";
+  }
+
+  const value = window.localStorage.getItem(PERSISTED_RIGHT_PANEL_TAB_KEY);
+  return value === "packages" ? value : "files";
+}
 
 function omitRecordKeys<T>(record: Record<string, T>, keys: readonly string[]): Record<string, T> {
   if (keys.length === 0) {
@@ -76,6 +105,66 @@ function formatCellResult(result: unknown): string[] {
   }
 }
 
+function splitCellOutputText(value: string): string[] {
+  const normalizedValue = value.replace(/\r\n?/gu, "\n");
+  return normalizedValue.length > 0 ? normalizedValue.split("\n") : [];
+}
+
+function appendCellOutputChunk(output: readonly string[] | undefined, chunk: string): string[] {
+  if (chunk.length === 0) {
+    return output ? [...output] : [];
+  }
+
+  return splitCellOutputText(`${output?.join("\n") ?? ""}${chunk}`);
+}
+
+function updateNotebookCell(
+  notebook: NotebookDocument,
+  cellId: string,
+  updateCell: (cell: NotebookCell) => NotebookCell,
+): NotebookDocument {
+  return {
+    ...notebook,
+    cells: notebook.cells.map((cell) => cell.id === cellId ? updateCell(cell) : cell),
+  };
+}
+
+function finalizeExecutionTask(
+  task: RemoteVmExecutionTask | undefined,
+  fallbackStatus: RemoteVmExecutionTask["status"],
+): RemoteVmExecutionTask | undefined {
+  if (!task) {
+    return undefined;
+  }
+
+  if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+    return task;
+  }
+
+  return {
+    ...task,
+    status: fallbackStatus,
+    completedAt: new Date().toISOString(),
+    queuePosition: null,
+  };
+}
+
+function hasActiveNotebookExecution(runningCellIds: Record<string, boolean>): boolean {
+  for (const cellId in runningCellIds) {
+    if (runningCellIds[cellId]) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function createExecutionTransportError(message: string): Error & { fallbackToHttp: true } {
+  const error = new Error(message) as Error & { fallbackToHttp: true };
+  error.fallbackToHttp = true;
+  return error;
+}
+
 function createCellId(): string {
   return `cell-${crypto.randomUUID()}`;
 }
@@ -108,6 +197,22 @@ function getNotebookCellLanguage(cell: NotebookCell): RemoteNotebookCellLanguage
     : "javascript";
 }
 
+function getPreviousExecutableCellId(notebook: NotebookDocument, cellId: string): string | null {
+  const currentIndex = notebook.cells.findIndex((cell) => cell.id === cellId);
+  if (currentIndex <= 0) {
+    return null;
+  }
+
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const candidate = notebook.cells[index];
+    if (candidate && candidate.kind !== "markdown") {
+      return candidate.id;
+    }
+  }
+
+  return null;
+}
+
 function createUntitledNotebookPath(existingPaths: readonly string[]): string {
   const takenPaths = new Set(existingPaths);
   let index = 1;
@@ -133,10 +238,26 @@ function normalizeNotebookFileName(value: string): string {
   return rawName.toLowerCase().endsWith(".isb") ? rawName : `${rawName}.isb`;
 }
 
+function normalizeNotebookDirectoryName(value: string): string {
+  const trimmedValue = value.trim().replace(/\\/gu, "/");
+  return trimmedValue.split("/").filter(Boolean).at(-1) ?? "";
+}
+
 function getNotebookDirectoryPath(relativePath: string): string {
   const segments = relativePath.split("/").filter(Boolean);
   segments.pop();
   return segments.join("/");
+}
+
+function joinNotebookDirectoryPath(directoryPath: string, folderName: string): string {
+  const normalizedFolderName = normalizeNotebookDirectoryName(folderName);
+  if (normalizedFolderName.length === 0) {
+    return directoryPath;
+  }
+
+  return directoryPath.length > 0
+    ? `${directoryPath}/${normalizedFolderName}`
+    : normalizedFolderName;
 }
 
 function joinNotebookPath(directoryPath: string, fileName: string): string {
@@ -171,6 +292,18 @@ function createUntitledNotebookPathInDirectory(
 
 function getNotebookFolderNodeIds(relativePath: string): string[] {
   const segments = getNotebookDirectoryPath(relativePath).split("/").filter(Boolean);
+  const nodeIds: string[] = [];
+  let currentPath = "";
+  for (const segment of segments) {
+    currentPath = currentPath.length > 0 ? `${currentPath}/${segment}` : segment;
+    nodeIds.push(`folder:${currentPath}`);
+  }
+
+  return nodeIds;
+}
+
+function getDirectoryFolderNodeIds(directoryPath: string): string[] {
+  const segments = directoryPath.split("/").filter(Boolean);
   const nodeIds: string[] = [];
   let currentPath = "";
   for (const segment of segments) {
@@ -319,11 +452,14 @@ type InterfaceState = {
   activeCellId: string;
   executionCounts: Record<string, number>;
   cellResults: Record<string, unknown>;
+  cellExecutionTasks: Record<string, RemoteVmExecutionTask>;
   runningCellIds: Record<string, boolean>;
   expandedFolderIds: string[];
   kernelStatus: KernelStatus;
   lastRunLabel: string;
   isbFiles: RemoteIsbFileEntry[];
+  isbFolders: RemoteIsbFolderEntry[];
+  notebookOrderState: NotebookOrderState;
   notebooks: Record<string, NotebookDocument>;
   notebookDirtyByFile: Record<string, boolean>;
   sessionCodeByFile: Record<string, string>;
@@ -337,7 +473,7 @@ type InterfaceState = {
   selectedFsSize: number;
   fsDraftContent: string;
   isFsDirty: boolean;
-  rightPanelTab: "files" | "browsers" | "packages";
+  rightPanelTab: RightPanelTab;
   browserProfiles: RemoteBrowserProfileEntry[];
   isBrowserLoading: boolean;
   browserActionTarget: string | null;
@@ -353,29 +489,40 @@ type InterfaceState = {
   activeBrowserProfileId: string | null;
   activePackageBoxId: string | null;
   activePackageBoxTab: PackageBoxModalTab;
+  applicationInstances: ApplicationInstance[];
+  selectedApplicationInstanceId: string | null;
+  applicationSectionExpanded: boolean;
   contextMenu: ContextMenuState | null;
   tooltip: string | null;
+  commandPaletteOpen: boolean;
+  commandPaletteQuery: string;
+  commandPaletteSelectedCommandId: string | null;
+  commandPaletteCommands: RemoteCommandPaletteCommand[];
+  recentCommandPaletteCommandIds: string[];
+  isCommandPaletteLoading: boolean;
+  commandPaletteError: string | null;
   completionCache: Record<string, { fragment: string; items: RemoteNotebookCompletionItem[] }>;
   bootstrap: () => Promise<void>;
   refreshFiles: () => Promise<void>;
   openRemoteFile: (relativePath: string) => Promise<void>;
   switchRemoteFile: (relativePath: string) => Promise<void>;
   createRemoteFile: (relativePath?: string) => Promise<void>;
+  createNotebookFolder: (directoryPath: string, folderName?: string) => Promise<void>;
   createNotebookInFolder: (directoryPath: string, notebookName?: string) => Promise<void>;
   renameNotebook: (relativePath: string, nextName: string) => Promise<void>;
   moveNotebook: (relativePath: string, targetPath: string) => Promise<void>;
   deleteNotebook: (relativePath: string) => Promise<void>;
-  selectRightPanelTab: (tab: "files" | "browsers" | "packages") => Promise<void>;
+  selectRightPanelTab: (tab: RightPanelTab) => Promise<void>;
   refreshBrowserList: () => Promise<void>;
   launchBrowserProfile: (target: string) => Promise<void>;
   stopBrowserProfile: (target: string) => Promise<void>;
   navigateBrowserProfile: (target: string, url: string) => Promise<void>;
   refreshPackageList: () => Promise<void>;
-  createPackageBox: (input: { id: string; name?: string; description?: string; packages?: string[]; sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions> }) => Promise<void>;
+  createPackageBox: (input: { id: string; name?: string; description?: string; packages?: string[] } & RemotePackageBoxPolicyInput) => Promise<void>;
   deletePackageBox: (target: string) => Promise<void>;
   selectPackageBox: (target: string) => Promise<void>;
   installPackageSet: (packages: string[], target?: string) => Promise<void>;
-  setPackageBoxPrivilege: (target: string, input: { defaultPrivilegeLevel?: RemotePackagePrivilegeLevel; allowedPrivilegeLevels?: RemotePackagePrivilegeLevel[]; sandboxPolicyExtensions?: Partial<RemotePackageSandboxPolicyExtensions> }) => Promise<void>;
+  setPackageBoxPrivilege: (target: string, input: RemotePackageBoxPolicyInput) => Promise<void>;
   openBrowserProfileModal: (profileId: string) => void;
   openPackageBoxModal: (boxId: string, tab?: PackageBoxModalTab) => void;
   setPackageBoxModalTab: (tab: PackageBoxModalTab) => void;
@@ -411,6 +558,19 @@ type InterfaceState = {
   openContextMenu: (contextMenu: ContextMenuState) => void;
   closeContextMenu: () => void;
   setTooltip: (text: string | null) => void;
+  toggleApplicationSection: () => void;
+  openApplicationInstance: (input: { applicationId: string; title: string; input?: unknown; select?: boolean }) => string;
+  selectApplicationInstance: (instanceId: string | null) => void;
+  closeApplicationInstance: (instanceId: string) => void;
+  updateApplicationInstanceTitle: (instanceId: string, title: string) => void;
+  updateApplicationInstanceInput: (instanceId: string, input: unknown) => void;
+  openCommandPalette: () => void;
+  closeCommandPalette: () => void;
+  setCommandPaletteQuery: (query: string) => void;
+  setCommandPaletteSelectedCommandId: (id: string | null) => void;
+  loadCommandPaletteCommands: () => Promise<void>;
+  rememberCommandPaletteCommand: (id: string) => void;
+  setNotebookOrderState: (nextState: NotebookOrderState) => void;
   setCompletionCache: (sessionCode: string, fragment: string, items: RemoteNotebookCompletionItem[]) => void;
 };
 
@@ -452,6 +612,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
       snapshotPathByFile: omitRecordKeys(state.snapshotPathByFile, [notebookId]),
       executionCounts: omitRecordKeys(state.executionCounts, cellIds),
       cellResults: omitRecordKeys(state.cellResults, cellIds),
+      cellExecutionTasks: omitRecordKeys(state.cellExecutionTasks, cellIds),
       runningCellIds: omitRecordKeys(state.runningCellIds, cellIds),
       ...(options.resetSelection
         ? {
@@ -510,13 +671,17 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
 
   const setSessionState = (
     session: RemoteNotebookSession,
-    options: { preserveCellResults?: boolean } = {},
+    options: { preserveCellResults?: boolean; resetExecutionState?: boolean } = {},
   ): void => {
     set((state) => ({
       ...(function () {
         const previousCells = state.notebooks[session.relativePath]?.cells ?? [];
         const previousCellsById = new Map(previousCells.map((cell) => [cell.id, cell]));
         const nextCellIds = session.notebook.cells.map((cell) => cell.id);
+        const sessionCellIds = [...new Set([
+          ...previousCells.map((cell) => cell.id),
+          ...nextCellIds,
+        ])];
         const removableCellResultIds = options.preserveCellResults
           ? [
             ...previousCells
@@ -526,28 +691,34 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
               .filter((cell) => !canReuseCellResult(previousCellsById.get(cell.id), cell))
               .map((cell) => cell.id),
           ]
-          : [...new Set([
-            ...previousCells.map((cell) => cell.id),
-            ...nextCellIds,
-          ])];
+          : sessionCellIds;
+        const removableExecutionStateIds = options.resetExecutionState
+          ? sessionCellIds
+          : previousCells
+              .filter((cell) => !nextCellIds.includes(cell.id))
+              .map((cell) => cell.id);
+        const nextRunningCellIds = omitRecordKeys(
+          state.runningCellIds,
+          [...new Set(removableExecutionStateIds)],
+        );
+        const nextKernelStatus = hasActiveNotebookExecution(nextRunningCellIds) ? "running" : "idle";
 
         return {
           cellResults: omitRecordKeys(state.cellResults, [...new Set(removableCellResultIds)]),
+          cellExecutionTasks: omitRecordKeys(state.cellExecutionTasks, [...new Set(removableExecutionStateIds)]),
+          runningCellIds: nextRunningCellIds,
+          kernelStatus: nextKernelStatus,
+          lastRunLabel: nextKernelStatus === "running"
+            ? `${session.relativePath} / execution in progress`
+            : `${session.relativePath} / ready`,
         };
       })(),
       serverStatus: "ready",
-      kernelStatus: "idle",
       selectedFileId: session.relativePath,
+      selectedApplicationInstanceId: null,
       activeCellId: state.activeCellId && session.notebook.cells.some((cell) => cell.id === state.activeCellId)
         ? state.activeCellId
         : (session.notebook.cells[0]?.id ?? ""),
-      runningCellIds: omitRecordKeys(
-        state.runningCellIds,
-        [...new Set([
-          ...(state.notebooks[session.relativePath]?.cells.map((cell) => cell.id) ?? []),
-          ...session.notebook.cells.map((cell) => cell.id),
-        ])],
-      ),
       notebooks: {
         ...state.notebooks,
         [session.relativePath]: session.notebook,
@@ -568,7 +739,6 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         ...state.snapshotPathByFile,
         [session.relativePath]: session.snapshotPath,
       },
-      lastRunLabel: `${session.relativePath} / ready`,
     }));
   };
 
@@ -675,22 +845,25 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     isSaving: false,
     isFsLoading: false,
     isFsSaving: false,
-    selectedFileId: "",
+    selectedFileId: readPersistedSelectedFileId(),
     activeCellId: "",
     executionCounts: {},
     cellResults: {},
+    cellExecutionTasks: {},
     runningCellIds: {},
     expandedFolderIds: ["folder:workspace"],
     kernelStatus: "idle",
     lastRunLabel: "Connecting to VM server",
     isbFiles: [],
+    isbFolders: [],
+    notebookOrderState: readPersistedNotebookOrderState(),
     notebooks: {},
     notebookDirtyByFile: {},
     sessionCodeByFile: {},
     snapshotPathByFile: {},
     currentFsPath: "/",
     fsEntries: [],
-    rightPanelTab: "files",
+    rightPanelTab: readPersistedRightPanelTab(),
     browserProfiles: [],
     isBrowserLoading: false,
     browserActionTarget: null,
@@ -707,8 +880,18 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     activeBrowserProfileId: null,
     activePackageBoxId: null,
     activePackageBoxTab: "overview",
+    applicationInstances: [],
+    selectedApplicationInstanceId: null,
+    applicationSectionExpanded: true,
     contextMenu: null,
     tooltip: null,
+    commandPaletteOpen: false,
+    commandPaletteQuery: "",
+    commandPaletteSelectedCommandId: null,
+    commandPaletteCommands: [],
+    recentCommandPaletteCommandIds: [],
+    isCommandPaletteLoading: false,
+    commandPaletteError: null,
     completionCache: {},
     bootstrap: async () => {
       if (get().hasBootstrapped || get().isLoadingFiles) {
@@ -717,8 +900,8 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
 
       set({ isLoadingFiles: true, serverStatus: "connecting", lastRunLabel: "Loading workspace files" });
       try {
-        const files = await listRemoteIsbFiles();
-        set({ isbFiles: files });
+        const [files, folders] = await Promise.all([listRemoteIsbFiles(), listRemoteIsbFolders()]);
+        set({ isbFiles: files, isbFolders: folders });
 
         let requestedPath: string | undefined;
         let requestedCellId: string | undefined;
@@ -765,8 +948,8 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     refreshFiles: async () => {
       set({ isLoadingFiles: true });
       try {
-        const files = await listRemoteIsbFiles();
-        set({ isbFiles: files, isLoadingFiles: false, serverStatus: "ready" });
+        const [files, folders] = await Promise.all([listRemoteIsbFiles(), listRemoteIsbFolders()]);
+        set({ isbFiles: files, isbFolders: folders, isLoadingFiles: false, serverStatus: "ready" });
       } catch (error) {
         set({
           isLoadingFiles: false,
@@ -777,11 +960,6 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     },
     selectRightPanelTab: async (tab) => {
       set({ rightPanelTab: tab });
-      if (tab === "browsers") {
-        await get().refreshBrowserList();
-        return;
-      }
-
       if (tab === "packages") {
         await get().refreshPackageList();
       }
@@ -953,12 +1131,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         lastRunLabel: `${target} / updating privilege policy`,
       });
       try {
-        await setRemotePackageBoxPrivilege({
-          target,
-          allowedPrivilegeLevels: input.allowedPrivilegeLevels,
-          defaultPrivilegeLevel: input.defaultPrivilegeLevel,
-          sandboxPolicyExtensions: input.sandboxPolicyExtensions,
-        });
+        await setRemotePackageBoxPrivilege({ target, ...input });
         await loadPackageSnapshot({ showLoading: false });
         set({ packageActionTarget: null, packageActionKind: null, serverStatus: "ready" });
       } catch (error) {
@@ -997,6 +1170,12 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     switchRemoteFile: async (relativePath) => {
       const state = get();
       if (relativePath === state.selectedFileId) {
+        if (state.selectedApplicationInstanceId !== null) {
+          set({
+            selectedApplicationInstanceId: null,
+            lastRunLabel: `${relativePath} / notebook selected`,
+          });
+        }
         return;
       }
 
@@ -1027,6 +1206,32 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         const session = await createRemoteIsbFile(targetPath);
         set({ isOpeningFile: false });
         await applyRemoteSession(session);
+      } catch (error) {
+        set({
+          isOpeningFile: false,
+          serverStatus: "error",
+          lastRunLabel: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    createNotebookFolder: async (directoryPath, folderName) => {
+      const targetPath = folderName
+        ? joinNotebookDirectoryPath(directoryPath, folderName)
+        : joinNotebookDirectoryPath(directoryPath, "folder");
+      if (targetPath.length === 0) {
+        return;
+      }
+
+      set({ isOpeningFile: true, serverStatus: "connecting", lastRunLabel: `${targetPath} / create folder` });
+      try {
+        await createRemoteIsbFolder(targetPath);
+        set((state) => ({
+          isOpeningFile: false,
+          serverStatus: "ready",
+          lastRunLabel: `${targetPath} / folder created`,
+          expandedFolderIds: [...new Set([...state.expandedFolderIds, ...getDirectoryFolderNodeIds(targetPath)])],
+        }));
+        await get().refreshFiles();
       } catch (error) {
         set({
           isOpeningFile: false,
@@ -1147,7 +1352,11 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     },
     selectMode: (mode) => set({ activeMode: mode }),
     toggleSignalBloom: () => set((state) => ({ signalBloom: !state.signalBloom })),
-    selectFile: (fileId, defaultCellId) => set({ selectedFileId: fileId, activeCellId: defaultCellId }),
+    selectFile: (fileId, defaultCellId) => set({
+      selectedFileId: fileId,
+      selectedApplicationInstanceId: null,
+      activeCellId: defaultCellId,
+    }),
     focusCell: (cellId) => set({ activeCellId: cellId }),
     toggleFolder: (folderId) => set((state) => ({
       expandedFolderIds: state.expandedFolderIds.includes(folderId)
@@ -1170,47 +1379,214 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
 
       const nextCount = (state.executionCounts[cellId] ?? cell.executionCount ?? 0) + 1;
       set((currentState) => ({
-        kernelStatus: "running",
-        serverStatus: "ready",
-        lastRunLabel: `${notebook.path} / ${cell.title}`,
-        runningCellIds: {
-          ...currentState.runningCellIds,
-          [cellId]: true,
-        },
+        ...(function () {
+          const currentNotebook = currentState.notebooks[notebookId] ?? notebook;
+          const nextCellResults = { ...currentState.cellResults };
+          delete nextCellResults[cellId];
+          const nextCellExecutionTasks = { ...currentState.cellExecutionTasks };
+          delete nextCellExecutionTasks[cellId];
+
+          return {
+            kernelStatus: "running",
+            serverStatus: "ready",
+            lastRunLabel: `${notebook.path} / ${cell.title}`,
+            cellResults: nextCellResults,
+            cellExecutionTasks: nextCellExecutionTasks,
+            runningCellIds: {
+              ...currentState.runningCellIds,
+              [cellId]: true,
+            },
+            notebooks: {
+              ...currentState.notebooks,
+              [notebookId]: updateNotebookCell(currentNotebook, cellId, (entry) => ({
+                ...entry,
+                output: [],
+              })),
+            },
+          };
+        })(),
       }));
       try {
-        const result = await evaluateRemoteCell(sessionCode, cell.source.join("\n"), {
+        const executionInput = {
           language: getNotebookCellLanguage(cell),
-        });
+          cellId: cell.id,
+          previousCellId: getPreviousExecutableCellId(notebook, cell.id) ?? undefined,
+        };
+        let result: unknown;
+        try {
+          result = await new Promise<unknown>((resolve, reject) => {
+            let settled = false;
+            let executeSent = false;
+
+            const stream = createRemoteNotebookExecutionStream({
+              onClose: () => {
+                if (settled) {
+                  return;
+                }
+
+                settled = true;
+                reject(
+                  executeSent
+                    ? new Error("Notebook execution stream closed before a final result was received.")
+                    : createExecutionTransportError("Notebook execution stream closed before the task was queued."),
+                );
+              },
+              onError: () => {
+                if (settled) {
+                  return;
+                }
+
+                settled = true;
+                stream.close();
+                reject(
+                  executeSent
+                    ? new Error("Notebook execution stream connection failed during execution.")
+                    : createExecutionTransportError("Notebook execution stream failed before the task was queued."),
+                );
+              },
+              onEvent: (event) => {
+                if (settled) {
+                  return;
+                }
+
+                if (event.type === "ready") {
+                  if (!executeSent) {
+                    executeSent = true;
+                    stream.execute({
+                      code: sessionCode,
+                      source: cell.source.join("\n"),
+                      language: executionInput.language,
+                      cellId: executionInput.cellId,
+                      previousCellId: executionInput.previousCellId,
+                    });
+                  }
+                  return;
+                }
+
+                if (event.type === "queued" || event.type === "queue" || event.type === "started" || event.type === "complete") {
+                  set((currentState) => ({
+                    cellExecutionTasks: {
+                      ...currentState.cellExecutionTasks,
+                      [cellId]: event.task,
+                    },
+                    lastRunLabel: event.type === "started"
+                      ? `${notebook.path} / ${cell.title}`
+                      : `${notebook.path} / ${cell.title} / queued`,
+                  }));
+                  return;
+                }
+
+                if (event.type === "output") {
+                  set((currentState) => {
+                    const currentNotebook = currentState.notebooks[notebookId] ?? notebook;
+                    const currentCell = currentNotebook.cells.find((entry) => entry.id === cellId);
+                    const nextOutput = appendCellOutputChunk(currentCell?.output, event.data);
+
+                    return {
+                      notebooks: {
+                        ...currentState.notebooks,
+                        [notebookId]: updateNotebookCell(currentNotebook, cellId, (entry) => ({
+                          ...entry,
+                          output: nextOutput,
+                        })),
+                      },
+                    };
+                  });
+                  return;
+                }
+
+                if (event.type === "result") {
+                  settled = true;
+                  set((currentState) => {
+                    const nextCellExecutionTasks = { ...currentState.cellExecutionTasks };
+                    const nextTask = finalizeExecutionTask(nextCellExecutionTasks[cellId], "completed");
+                    if (nextTask) {
+                      nextCellExecutionTasks[cellId] = nextTask;
+                    }
+
+                    return {
+                      cellExecutionTasks: nextCellExecutionTasks,
+                    };
+                  });
+                  stream.close();
+                  resolve(event.result);
+                  return;
+                }
+
+                if (event.type === "error") {
+                  settled = true;
+                  set((currentState) => {
+                    const nextCellExecutionTasks = { ...currentState.cellExecutionTasks };
+                    const nextTask = finalizeExecutionTask(nextCellExecutionTasks[cellId], "failed");
+                    if (nextTask) {
+                      nextCellExecutionTasks[cellId] = nextTask;
+                    }
+
+                    return {
+                      cellExecutionTasks: nextCellExecutionTasks,
+                    };
+                  });
+                  stream.close();
+                  reject(new Error(event.error));
+                  return;
+                }
+
+                if (event.type === "cancelled") {
+                  settled = true;
+                  set((currentState) => ({
+                    cellExecutionTasks: {
+                      ...currentState.cellExecutionTasks,
+                      [cellId]: event.task,
+                    },
+                  }));
+                  stream.close();
+                  reject(new Error(event.reason));
+                }
+              },
+            });
+          });
+        } catch (error) {
+          if ((error as Error & { fallbackToHttp?: boolean }).fallbackToHttp !== true) {
+            throw error;
+          }
+
+          result = await evaluateRemoteCell(sessionCode, cell.source.join("\n"), executionInput);
+        }
         const output = formatCellResult(result);
         set((currentState) => {
           const currentNotebook = currentState.notebooks[notebookId] ?? notebook;
           const nextRunningCellIds = { ...currentState.runningCellIds };
           delete nextRunningCellIds[cellId];
+          const nextCellExecutionTasks = { ...currentState.cellExecutionTasks };
+          const nextTask = finalizeExecutionTask(nextCellExecutionTasks[cellId], "completed");
+          if (nextTask) {
+            nextCellExecutionTasks[cellId] = nextTask;
+          }
 
           return {
-          executionCounts: {
-            ...currentState.executionCounts,
-            [cellId]: nextCount,
-          },
-          cellResults: {
-            ...currentState.cellResults,
-            [cellId]: result,
-          },
-          runningCellIds: nextRunningCellIds,
-          kernelStatus: "idle",
-          lastRunLabel: `${notebook.path} / ${cell.title}`,
-          notebooks: {
-            ...currentState.notebooks,
-            [notebookId]: {
-              ...currentNotebook,
-              cells: currentNotebook.cells.map((entry) => entry.id === cellId
-                ? { ...entry, executionCount: nextCount, output }
-                : entry),
+            executionCounts: {
+              ...currentState.executionCounts,
+              [cellId]: nextCount,
             },
-          },
-        };
-      });
+            cellResults: {
+              ...currentState.cellResults,
+              [cellId]: result,
+            },
+            cellExecutionTasks: nextCellExecutionTasks,
+            runningCellIds: nextRunningCellIds,
+            kernelStatus: hasActiveNotebookExecution(nextRunningCellIds) ? "running" : "idle",
+            serverStatus: "ready",
+            lastRunLabel: `${notebook.path} / ${cell.title}`,
+            notebooks: {
+              ...currentState.notebooks,
+              [notebookId]: updateNotebookCell(currentNotebook, cellId, (entry) => ({
+                ...entry,
+                executionCount: nextCount,
+                output,
+              })),
+            },
+          };
+        });
       } catch (error) {
         set((currentState) => {
           const currentNotebook = currentState.notebooks[notebookId] ?? notebook;
@@ -1218,28 +1594,29 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
           delete nextRunningCellIds[cellId];
           const nextCellResults = { ...currentState.cellResults };
           delete nextCellResults[cellId];
+          const nextCellExecutionTasks = { ...currentState.cellExecutionTasks };
+          const nextTask = finalizeExecutionTask(nextCellExecutionTasks[cellId], "failed");
+          if (nextTask) {
+            nextCellExecutionTasks[cellId] = nextTask;
+          }
 
           return {
-          kernelStatus: "stopped",
-          serverStatus: "error",
-          runningCellIds: nextRunningCellIds,
-          cellResults: nextCellResults,
-          lastRunLabel: error instanceof Error ? error.message : String(error),
-          notebooks: {
-            ...currentState.notebooks,
-            [notebookId]: {
-              ...currentNotebook,
-              cells: currentNotebook.cells.map((entry) => entry.id === cellId
-                ? {
-                  ...entry,
-                  executionCount: nextCount,
-                  output: [error instanceof Error ? error.message : String(error)],
-                }
-                : entry),
+            kernelStatus: hasActiveNotebookExecution(nextRunningCellIds) ? "running" : "stopped",
+            serverStatus: "error",
+            runningCellIds: nextRunningCellIds,
+            cellResults: nextCellResults,
+            cellExecutionTasks: nextCellExecutionTasks,
+            lastRunLabel: error instanceof Error ? error.message : String(error),
+            notebooks: {
+              ...currentState.notebooks,
+              [notebookId]: updateNotebookCell(currentNotebook, cellId, (entry) => ({
+                ...entry,
+                executionCount: nextCount,
+                output: [error instanceof Error ? error.message : String(error)],
+              })),
             },
-          },
-        };
-      });
+          };
+        });
       }
     },
     runNotebook: async (notebookId) => {
@@ -1258,7 +1635,12 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
       }
       set({ kernelStatus: "idle", lastRunLabel: `${notebook.path} / run all` });
     },
-    stopExecution: (label) => set({ kernelStatus: "stopped", lastRunLabel: label, runningCellIds: {} }),
+    stopExecution: (label) => set({
+      kernelStatus: "stopped",
+      lastRunLabel: label,
+      runningCellIds: {},
+      cellExecutionTasks: {},
+    }),
     restartKernel: async (notebookId) => {
       const state = get();
       const notebook = state.notebooks[notebookId];
@@ -1272,7 +1654,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
       try {
         await saveRemoteNotebook(sessionCode, notebook);
         const session = await restartRemoteNotebook(sessionCode);
-        setSessionState(session);
+        setSessionState(session, { resetExecutionState: true });
         await loadFsDirectory(session.code, get().currentFsPath || "/", { resetSelection: false });
       } catch (error) {
         set({
@@ -1382,11 +1764,14 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
 
       const nextCellResults = { ...state.cellResults };
       delete nextCellResults[cellId];
+      const nextCellExecutionTasks = { ...state.cellExecutionTasks };
+      delete nextCellExecutionTasks[cellId];
       const nextRunningCellIds = { ...state.runningCellIds };
       delete nextRunningCellIds[cellId];
 
       return {
         cellResults: nextCellResults,
+        cellExecutionTasks: nextCellExecutionTasks,
         runningCellIds: nextRunningCellIds,
         notebooks: {
           ...state.notebooks,
@@ -1498,6 +1883,13 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
           ...notebook.cells.map((cell) => cell.id),
         ])],
       ),
+      cellExecutionTasks: omitRecordKeys(
+        state.cellExecutionTasks,
+        [...new Set([
+          ...(state.notebooks[notebook.id]?.cells.map((cell) => cell.id) ?? []),
+          ...notebook.cells.map((cell) => cell.id),
+        ])],
+      ),
       runningCellIds: omitRecordKeys(
         state.runningCellIds,
         [...new Set([
@@ -1513,6 +1905,7 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
         ...state.notebookDirtyByFile,
         [notebook.id]: false,
       },
+      selectedApplicationInstanceId: null,
       selectedFileId: notebook.id,
       activeCellId: notebook.cells[0]?.id ?? "",
     })),
@@ -1710,6 +2103,117 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
     openContextMenu: (contextMenu) => set({ contextMenu }),
     closeContextMenu: () => set({ contextMenu: null }),
     setTooltip: (text) => set({ tooltip: text }),
+    toggleApplicationSection: () => set((state) => ({
+      applicationSectionExpanded: !state.applicationSectionExpanded,
+    })),
+    openApplicationInstance: ({ applicationId, title, input, select = true }) => {
+      const instanceId = `app:${crypto.randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      const normalizedTitle = title.trim().length > 0 ? title.trim() : applicationId;
+
+      set((state) => ({
+        applicationInstances: [{
+          instanceId,
+          applicationId,
+          title: normalizedTitle,
+          createdAt,
+          input: input ?? null,
+        }, ...state.applicationInstances],
+        selectedApplicationInstanceId: select ? instanceId : state.selectedApplicationInstanceId,
+        applicationSectionExpanded: true,
+        lastRunLabel: `${normalizedTitle} / app opened`,
+      }));
+
+      return instanceId;
+    },
+    selectApplicationInstance: (instanceId) => set({ selectedApplicationInstanceId: instanceId }),
+    closeApplicationInstance: (instanceId) => set((state) => {
+      const closingInstance = state.applicationInstances.find((instance) => instance.instanceId === instanceId) ?? null;
+      const nextInstances = state.applicationInstances.filter((instance) => instance.instanceId !== instanceId);
+
+      return {
+        applicationInstances: nextInstances,
+        selectedApplicationInstanceId: state.selectedApplicationInstanceId === instanceId
+          ? null
+          : state.selectedApplicationInstanceId,
+        lastRunLabel: closingInstance
+          ? `${closingInstance.title} / app closed`
+          : state.lastRunLabel,
+      };
+    }),
+    updateApplicationInstanceTitle: (instanceId, title) => set((state) => {
+      const normalizedTitle = title.trim();
+      if (normalizedTitle.length === 0) {
+        return state;
+      }
+
+      const targetInstance = state.applicationInstances.find((instance) => instance.instanceId === instanceId) ?? null;
+      if (!targetInstance || targetInstance.title === normalizedTitle) {
+        return state;
+      }
+
+      return {
+        applicationInstances: state.applicationInstances.map((instance) => instance.instanceId === instanceId
+          ? { ...instance, title: normalizedTitle }
+          : instance),
+      };
+    }),
+    updateApplicationInstanceInput: (instanceId, input) => set((state) => {
+      const targetInstance = state.applicationInstances.find((instance) => instance.instanceId === instanceId) ?? null;
+      if (!targetInstance || Object.is(targetInstance.input, input)) {
+        return state;
+      }
+
+      return {
+        applicationInstances: state.applicationInstances.map((instance) => instance.instanceId === instanceId
+          ? { ...instance, input }
+          : instance),
+      };
+    }),
+    openCommandPalette: () => set({
+      commandPaletteOpen: true,
+      contextMenu: null,
+      tooltip: null,
+      commandPaletteError: null,
+    }),
+    closeCommandPalette: () => set({
+      commandPaletteOpen: false,
+      commandPaletteQuery: "",
+      commandPaletteSelectedCommandId: null,
+      commandPaletteError: null,
+    }),
+    setCommandPaletteQuery: (query) => set({
+      commandPaletteQuery: query,
+      commandPaletteSelectedCommandId: null,
+      commandPaletteError: null,
+    }),
+    setCommandPaletteSelectedCommandId: (id) => set({ commandPaletteSelectedCommandId: id }),
+    loadCommandPaletteCommands: async () => {
+      if (get().isCommandPaletteLoading) {
+        return;
+      }
+
+      set({ isCommandPaletteLoading: true, commandPaletteError: null });
+      try {
+        const commandPaletteCommands = await listRemoteCommandPaletteCommands();
+        set((state) => ({
+          commandPaletteCommands,
+          isCommandPaletteLoading: false,
+          commandPaletteError: null,
+          commandPaletteSelectedCommandId: state.commandPaletteSelectedCommandId ?? commandPaletteCommands[0]?.id ?? null,
+        }));
+      } catch (error) {
+        set({
+          isCommandPaletteLoading: false,
+          commandPaletteError: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    rememberCommandPaletteCommand: (id) => set((state) => ({
+      recentCommandPaletteCommandIds: [id, ...state.recentCommandPaletteCommandIds.filter((entry) => entry !== id)].slice(0, 12),
+    })),
+    setNotebookOrderState: (nextState) => set({ notebookOrderState: nextState }),
     setCompletionCache: (sessionCode, fragment, items) => set((state) => ({
       completionCache: {
         ...state.completionCache,
@@ -1720,6 +2224,17 @@ export const useInterfaceStore = create<InterfaceState>((set, get) => {
 });
 
 useInterfaceStore.subscribe((state) => {
+  if (typeof window !== "undefined") {
+    if (state.selectedFileId) {
+      window.localStorage.setItem(PERSISTED_SELECTED_FILE_KEY, state.selectedFileId);
+    } else {
+      window.localStorage.removeItem(PERSISTED_SELECTED_FILE_KEY);
+    }
+
+    window.localStorage.setItem(PERSISTED_RIGHT_PANEL_TAB_KEY, state.rightPanelTab);
+    window.localStorage.setItem(NOTEBOOK_ORDER_STORAGE_KEY, JSON.stringify(state.notebookOrderState));
+  }
+
   if (state.selectedFileId) {
     const hash = `#${encodeURIComponent(state.selectedFileId)}${state.activeCellId ? `:${encodeURIComponent(state.activeCellId)}` : ""}`;
     if (window.location.hash !== hash) {

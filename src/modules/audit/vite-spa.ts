@@ -7,6 +7,7 @@ import {
 } from "../../primitives";
 import { defineExecutor, defineModule } from "../module";
 import {
+	AUDIT_NOTEBOOK_TYPE_OVERLAY,
 	AUDIT_TRAVERSAL_CONSOLE_PARAMS,
 	collectAuditPatternMatches,
 	collectAuditSecretDetections,
@@ -467,6 +468,7 @@ export const auditViteSpaModule = defineModule({
 	id: "audit/vite-spa",
 	category: "audit",
 	description: "Audit a deployed SPA for common Vite production leakage artifacts",
+	notebookTypeOverlay: AUDIT_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: AUDIT_TRAVERSAL_CONSOLE_PARAMS,
 	executor,
 }).useDefault("url");

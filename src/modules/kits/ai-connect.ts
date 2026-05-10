@@ -5,6 +5,7 @@ import { InvalidParamsError } from "../errors";
 import {
 	createAiConnectionsReport,
 	ensureAiKit,
+	parseOptionalBoolean,
 	parseOptionalProvider,
 	parseOptionalString,
 	parseOptionalStringRecord,
@@ -24,6 +25,7 @@ export type AiConnectParams = {
 	providerName?: string;
 	headersJson?: string;
 	system?: string;
+	persist?: boolean;
 };
 
 const AI_CONNECT_CONSOLE_PARAMS = [
@@ -40,6 +42,7 @@ const AI_CONNECT_CONSOLE_PARAMS = [
 	{ name: "providerName", detail: "Optional provider label for openai-compatible and google factories", example: "ollama", valueType: "string" },
 	{ name: "headersJson", detail: "Optional JSON object with additional HTTP headers", example: '{"X-Test":"1"}', valueType: "json" },
 	{ name: "system", detail: "Default system prompt stored on the connection", example: "Be concise.", valueType: "string" },
+	{ name: "persist", detail: "When false, keep the connection only in memory for the current Activity", example: "false", valueType: "boolean" },
 ] as const;
 
 function hasConnectionPayload(params: AiConnectParams): boolean {
@@ -111,17 +114,18 @@ function buildUpsertPayload(params: AiConnectParams, seed: AiConnection | null):
 export const aiConnectModule = defineModule<AiConnectParams>({
 	id: "kits/ai/connect",
 	category: "kits",
-	description: "Create, update, or select a saved $ai connection for the current Activity",
+	description: "Create, update, or select a $ai connection for the current Activity",
 	consoleParams: AI_CONNECT_CONSOLE_PARAMS,
 	executor: defineExecutor<AiConnectParams>(async (context) => {
 		const kit = await ensureAiKit(context);
 		const connectionTarget = parseOptionalString(context.params.connection, "connection");
 		const id = parseOptionalString(context.params.id, "id");
 		const name = parseOptionalString(context.params.name, "name");
+		const persist = parseOptionalBoolean(context.params.persist, "persist");
 		const seedConnection = resolveSeedConnection(kit.listConnections(), connectionTarget, id, name);
 
 		if (hasConnectionPayload(context.params)) {
-			const connection = await kit.saveConnection(buildUpsertPayload(context.params, seedConnection));
+			const connection = await kit.saveConnection(buildUpsertPayload(context.params, seedConnection), { persist });
 			kit.selectConnection(connection.id);
 			return [
 				createTextEntity(
@@ -130,6 +134,7 @@ export const aiConnectModule = defineModule<AiConnectParams>({
 						`Provider: ${connection.provider}`,
 						`Model: ${connection.model}`,
 						`Base URL: ${connection.baseUrl ?? "<default>"}`,
+						`Storage: ${persist === false ? "in-memory" : "repository"}`,
 					],
 					{ tone: "info" },
 				),

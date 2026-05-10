@@ -2,6 +2,18 @@ import { type ReactNode, useMemo } from "react";
 import type { RemotePackageBoxEntry } from "../api/client";
 import { useInterfaceStore } from "../store/ui";
 
+function deriveDefaultPrivilege(box: RemotePackageBoxEntry): string {
+  return box.defaultSandboxRw ? "sandbox-rw" : "sandbox-ro";
+}
+
+function deriveAllowedPrivileges(box: RemotePackageBoxEntry): string {
+  return [
+    "sandbox-ro",
+    ...(box.allowSandboxRw ? ["sandbox-rw"] : []),
+    ...(box.allowHostPrivileged ? ["host-privileged"] : []),
+  ].join(", ");
+}
+
 function describeHostInfo(hostInfo: ReturnType<typeof useInterfaceStore.getState>["packageHostInfo"]): string {
   if (!hostInfo) {
     return "Waiting for package host info.";
@@ -20,7 +32,8 @@ function describeBox(box: RemotePackageBoxEntry, isDefault: boolean): string {
   if (isDefault) {
     details.push("default");
   }
-  details.push(box.defaultPrivilegeLevel);
+  details.push(`default ${deriveDefaultPrivilege(box)}`);
+  details.push(deriveAllowedPrivileges(box));
   details.push(box.packages.length > 0 ? `${box.packages.length} supported package(s)` : "empty");
 
   return details.join(" · ");
@@ -178,9 +191,25 @@ export default function PackagesPanel() {
         {isPackagesLoading ? (
           <div className="rounded-[10px] bg-black/20 px-3 py-2 text-[11px] text-[#68686e]">Loading boxes...</div>
         ) : sortedBoxes.length === 0 ? (
-          <div className="rounded-[10px] bg-black/20 px-4 py-5 text-center">
-            <p className="text-[12px] text-white">No boxes created yet.</p>
-            <p className="mt-2 text-[11px] text-[#8b8b95]">Create an empty box here, then open it and install a preset inside the modal.</p>
+          <div className="rounded-[16px] bg-black/20 px-4 py-5 text-center">
+            <p className="text-[12px] font-medium text-white">No boxes created yet.</p>
+            <p className="mt-2 text-[11px] leading-relaxed text-[#8b8b95]">Create an empty box now, then jump straight into presets or refresh if another session has already prepared one.</p>
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => { void createEmptyBox(); }}
+                className="rounded-full bg-white/[0.06] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-white transition hover:bg-white/[0.1]"
+              >
+                Create Box
+              </button>
+              <button
+                type="button"
+                onClick={() => { void refreshPackageList(); }}
+                className="rounded-full bg-white/[0.04] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#d4d4da] transition hover:bg-white/[0.08] hover:text-white"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
         ) : (
           <div className="overflow-hidden rounded-[10px] bg-black/20">

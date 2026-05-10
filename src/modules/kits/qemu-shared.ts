@@ -15,9 +15,11 @@ import {
 	type OutputEntity,
 } from "../../primitives";
 import { InvalidParamsError } from "../errors";
-import type { ModuleExecutionContext } from "../module";
+import { defineNotebookTypeOverlay, type ModuleExecutionContext } from "../module";
 
 type EnsureQemuKitContext = Pick<ModuleExecutionContext<unknown, object>, "getQemuKit" | "runtime">;
+
+export const QEMU_NOTEBOOK_TYPE_OVERLAY = defineNotebookTypeOverlay("src/modules/kits/qemu.h.ts");
 
 export const QEMU_DISK_INTERFACE_VALUES: readonly QemuDiskInterface[] = ["virtio", "ide", "scsi"];
 export const QEMU_VM_ROLE_VALUES: readonly QemuVmRole[] = ["router"];

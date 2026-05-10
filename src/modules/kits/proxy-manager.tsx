@@ -4,7 +4,7 @@ import { type OutputEntity } from "../../primitives";
 import { defineExecutor, defineModule, type InteractiveApplicationProps } from "../module";
 import { InvalidParamsError } from "../errors";
 import { ProxyKit, type ProxyProfile, type ProxyType, type ProxyTestResult } from "../../kits/proxy-kit";
-import { createProxyProfilesReport, ensureProxyKit, parseOptionalString, PROXY_TYPE_VALUES } from "./proxy-shared";
+import { createProxyProfilesReport, ensureProxyKit, parseOptionalString, PROXY_NOTEBOOK_TYPE_OVERLAY, PROXY_TYPE_VALUES } from "./proxy-shared";
 
 type ProxyManagerProps = InteractiveApplicationProps & {
 	kit: ProxyKit;
@@ -298,6 +298,7 @@ export const proxyManagerModule = defineModule<ProxyManagerParams>({
 	id: "kits/proxy/manager",
 	description: "Interactive proxy manager; use $.kits.proxy.list() and $.kits.proxy.test() for notebook-safe operations",
 	category: "kits",
+	notebookTypeOverlay: PROXY_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: [
 		{
 			name: "action",

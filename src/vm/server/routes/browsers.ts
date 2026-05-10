@@ -1,9 +1,11 @@
 import type { CloakKit, CloakProfile } from "../../../kits/cloak-kit";
 import { MicrolinkUaKit } from "../../../kits/microlink-ua-kit";
 import type { ProxyKit } from "../../../kits/proxy-kit";
+import type { UaExactAgent, UaKit } from "../../../kits/ua-kit";
 import { formatProxyProfileUrl } from "../../../modules/kits/proxy-shared";
 import { createJsonResponse, createMethodNotAllowedResponse, readJsonBody, VmServerHttpError } from "../http";
 import {
+  readOptionalPositiveIntegerQueryParam,
   readVmBrowserActionRequestBody,
   readVmBrowserClickRequestBody,
   readVmBrowserGestureRequestBody,
@@ -11,6 +13,7 @@ import {
   readVmBrowserNavigateRequestBody,
   readVmBrowserProfileUpdateRequestBody,
   readVmBrowserTabActivationRequestBody,
+  readVmBrowserTextRequestBody,
   readVmBrowserWheelRequestBody,
 } from "../parsers";
 import {
@@ -19,12 +22,41 @@ import {
   resolveVmBrowserProfile,
 } from "../browser-helpers";
 
+function normalizeBrowserUserAgentDeviceClass(value: string | null): "desktop" | "mobile" | "tablet" {
+  return value === "mobile" || value === "tablet" ? value : "desktop";
+}
+
+function createBrowserUserAgentSuggestion(record: UaExactAgent) {
+  return {
+    browserFamily: record.browserFamily ?? "Unknown",
+    browserVersion: record.browserVersion,
+    deviceClass: normalizeBrowserUserAgentDeviceClass(record.deviceClass),
+    label: record.label,
+    osFamily: record.osFamily ?? "Unknown",
+    userAgent: record.userAgent,
+  };
+}
+
+function dedupeBrowserUserAgentSuggestions(
+  suggestions: ReturnType<typeof createBrowserUserAgentSuggestion>[],
+): ReturnType<typeof createBrowserUserAgentSuggestion>[] {
+  const seen = new Set<string>();
+  return suggestions.filter((suggestion) => {
+    if (seen.has(suggestion.userAgent)) {
+      return false;
+    }
+
+    seen.add(suggestion.userAgent);
+    return true;
+  });
+}
+
 export async function handleBrowserRoutes(
   request: Request,
   url: URL,
   ensureCloakKit: () => Promise<CloakKit>,
   ensureProxyKit: () => Promise<ProxyKit>,
-  ensureUserAgentKit: () => Promise<MicrolinkUaKit>,
+  ensureUserAgentKit: () => Promise<UaKit>,
 ): Promise<Response | null> {
   if (url.pathname === "/vm/browsers") {
     if (request.method !== "GET") {
@@ -48,6 +80,33 @@ export async function handleBrowserRoutes(
     return createJsonResponse({
       ok: true,
       result: { browsers },
+    });
+  }
+
+  if (url.pathname === "/vm/browsers/user-agent-search") {
+    if (request.method !== "GET") {
+      return createMethodNotAllowedResponse(["GET"]);
+    }
+
+    const query = url.searchParams.get("query")?.trim() ?? "";
+    const limit = readOptionalPositiveIntegerQueryParam(url, "limit", { min: 1, max: 20 }) ?? 8;
+    if (query.length === 0) {
+      return createJsonResponse({ ok: true, result: { query, suggestions: [] } });
+    }
+
+    const userAgentKit = await ensureUserAgentKit();
+    const exactAgents = await userAgentKit.listExactAgents({
+      categories: ["user"],
+      limit: limit * 4,
+      search: query,
+    });
+
+    return createJsonResponse({
+      ok: true,
+      result: {
+        query,
+        suggestions: dedupeBrowserUserAgentSuggestions(exactAgents.map(createBrowserUserAgentSuggestion)).slice(0, limit),
+      },
     });
   }
 
@@ -154,6 +213,23 @@ export async function handleBrowserRoutes(
     });
   }
 
+  const browserCloseTabMatch = url.pathname.match(/^\/vm\/browsers\/([^/]+)\/tabs\/close$/u);
+  if (browserCloseTabMatch) {
+    const target = decodeURIComponent(browserCloseTabMatch[1]!);
+    if (request.method !== "POST") {
+      return createMethodNotAllowedResponse(["POST"]);
+    }
+
+    const body = readVmBrowserTabActivationRequestBody(await readJsonBody(request));
+    const kit = await ensureCloakKit();
+    await kit.closeProfileTab(target, body.tabId);
+
+    return createJsonResponse({
+      ok: true,
+      result: { target, tabId: body.tabId },
+    });
+  }
+
   if (url.pathname === "/vm/browsers/launch") {
     if (request.method !== "POST") {
       return createMethodNotAllowedResponse(["POST"]);
@@ -161,7 +237,7 @@ export async function handleBrowserRoutes(
 
     const body = readVmBrowserActionRequestBody(await readJsonBody(request));
     const kit = await ensureCloakKit();
-    await kit.launchProfile(body.target, { headless: true });
+    await kit.launchProfile(body.target);
 
     return createJsonResponse({ ok: true, result: { target: body.target } });
   }
@@ -238,6 +314,30 @@ export async function handleBrowserRoutes(
     return createJsonResponse({ ok: true, result: { target: body.target } });
   }
 
+  if (url.pathname === "/vm/browsers/text") {
+    if (request.method !== "POST") {
+      return createMethodNotAllowedResponse(["POST"]);
+    }
+
+    const body = readVmBrowserTextRequestBody(await readJsonBody(request));
+    const kit = await ensureCloakKit();
+    await kit.insertTextProfile(body.target, body.text);
+
+    return createJsonResponse({ ok: true, result: { target: body.target } });
+  }
+
+  if (url.pathname === "/vm/browsers/selection") {
+    if (request.method !== "POST") {
+      return createMethodNotAllowedResponse(["POST"]);
+    }
+
+    const body = readVmBrowserActionRequestBody(await readJsonBody(request));
+    const kit = await ensureCloakKit();
+    const text = await kit.readSelectedTextProfile(body.target);
+
+    return createJsonResponse({ ok: true, result: { target: body.target, text } });
+  }
+
   if (url.pathname === "/vm/browsers/stop") {
     if (request.method !== "POST") {
       return createMethodNotAllowedResponse(["POST"]);
@@ -251,7 +351,7 @@ export async function handleBrowserRoutes(
   }
 
   if (url.pathname === "/vm/kits/microlink-ua") {
-    const userAgentKit = await ensureUserAgentKit();
+    const userAgentKit = new MicrolinkUaKit();
 
     if (request.method === "GET") {
       return createJsonResponse({ ok: true, result: await createVmMicrolinkUaPayload(userAgentKit) });

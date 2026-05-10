@@ -1,17 +1,19 @@
 import type { BpkgPackageBindingsDefinition } from "./define-bindings";
 import aircrackBindings from "./aircrack.bindings";
 import atoolBindings from "./atool.bindings";
+import cameradarBindings from "./cameradar.bindings";
 import metasploitBindings from "./metasploit.bindings";
 import nmapBindings from "./nmap.bindings";
 import sqlmapBindings from "./sqlmap.bindings";
 import ytdlpBindings from "./ytdlp.bindings";
 
 export * from "./define-bindings";
-export { aircrackBindings, atoolBindings, metasploitBindings, nmapBindings, sqlmapBindings, ytdlpBindings };
+export { aircrackBindings, atoolBindings, cameradarBindings, metasploitBindings, nmapBindings, sqlmapBindings, ytdlpBindings };
 
 export const registeredBpkgPackages: readonly BpkgPackageBindingsDefinition[] = [
 	aircrackBindings,
 	atoolBindings,
+	cameradarBindings,
 	metasploitBindings,
 	nmapBindings,
 	sqlmapBindings,

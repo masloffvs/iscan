@@ -10,6 +10,7 @@ import {
 import {
   getRemoteBrowserProfileSettings,
   saveRemoteBrowserProfileSettings,
+  searchRemoteBrowserUserAgents,
   type RemoteBrowserProfileEditorData,
   type RemoteBrowserProfileSettings,
   type RemoteBrowserProxyOption,
@@ -36,19 +37,32 @@ type BrowserProfileDraft = {
 };
 
 type BrowserProfileTab = "general" | "proxy" | "viewport" | "user-agent";
-type UserAgentDeviceFilter = RemoteBrowserUserAgentOption["deviceClass"] | "all";
+type UserAgentQuickDevice = "any" | "desktop" | "laptop" | "tablet" | "mobile";
+type UserAgentQuickSetup = {
+  browserFamily: string;
+  browserVersion: string;
+  brand: string;
+  device: UserAgentQuickDevice;
+  osFamily: string;
+};
 
 const PRESERVE_PROXY_VALUE = "__preserve__";
 const NO_PROXY_VALUE = "__none__";
 const BROWSER_DEFAULT_VIEWPORT_VALUE = "__browser_default__";
 const CUSTOM_VIEWPORT_VALUE = "__custom_viewport__";
-const DEFAULT_USER_AGENT_DEVICE_FILTER: UserAgentDeviceFilter = "desktop";
-const DEFAULT_USER_AGENT_VERSION_FILTER = "all";
+const USER_AGENT_MATCH_PREVIEW_LIMIT = 8;
 const BROWSER_PROFILE_TABS: ReadonlyArray<{ id: BrowserProfileTab; label: string }> = [
   { id: "general", label: "General" },
   { id: "proxy", label: "Proxy" },
   { id: "viewport", label: "Viewport" },
   { id: "user-agent", label: "User Agent" },
+];
+const USER_AGENT_QUICK_DEVICE_OPTIONS: ReadonlyArray<{ id: UserAgentQuickDevice; label: string }> = [
+  { id: "any", label: "Any" },
+  { id: "desktop", label: "PC" },
+  { id: "laptop", label: "Laptop" },
+  { id: "tablet", label: "Tablet" },
+  { id: "mobile", label: "Phone" },
 ];
 
 function createDraft(profile: RemoteBrowserProfileSettings): BrowserProfileDraft {
@@ -216,7 +230,14 @@ function findUserAgentOptionForDraft(
   draft: BrowserProfileDraft,
   editorData: RemoteBrowserProfileEditorData | null,
 ): RemoteBrowserUserAgentOption | null {
-  const userAgent = draft.userAgent.trim();
+  return findUserAgentOptionByValue(draft.userAgent, editorData);
+}
+
+function findUserAgentOptionByValue(
+  userAgentValue: string | null | undefined,
+  editorData: RemoteBrowserProfileEditorData | null,
+): RemoteBrowserUserAgentOption | null {
+  const userAgent = userAgentValue?.trim() ?? "";
   if (!editorData || userAgent.length === 0) {
     return null;
   }
@@ -224,45 +245,95 @@ function findUserAgentOptionForDraft(
   return editorData.userAgentOptions.find((option) => option.userAgent === userAgent) ?? null;
 }
 
-function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
+function createDefaultUserAgentQuickSetup(): UserAgentQuickSetup {
+  return {
+    browserFamily: "",
+    browserVersion: "",
+    brand: "",
+    device: "any",
+    osFamily: "",
+  };
 }
 
-function formatDeviceClassLabel(value: RemoteBrowserUserAgentOption["deviceClass"]): string {
-  switch (value) {
-    case "desktop":
-      return "Desktop";
-    case "tablet":
-      return "Tablet";
-    case "mobile":
-      return "Mobile";
-    default:
-      return value;
+function sortDistinctText(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))]
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function inferUserAgentBrand(option: RemoteBrowserUserAgentOption): string {
+  const userAgent = option.userAgent.toLowerCase();
+  if (userAgent.includes("iphone") || userAgent.includes("ipad") || userAgent.includes("macintosh") || userAgent.includes("mac os x")) {
+    return "Apple";
   }
+
+  if (userAgent.includes("samsung") || userAgent.includes("sm-")) {
+    return "Samsung";
+  }
+
+  if (userAgent.includes("huawei") || userAgent.includes("honor")) {
+    return "Huawei";
+  }
+
+  if (userAgent.includes("pixel") || userAgent.includes("cros")) {
+    return "Google";
+  }
+
+  if (userAgent.includes("xiaomi") || userAgent.includes("redmi") || userAgent.includes("poco") || userAgent.includes("; mi ")) {
+    return "Xiaomi";
+  }
+
+  if (userAgent.includes("oneplus")) {
+    return "OnePlus";
+  }
+
+  if (userAgent.includes("windows")) {
+    return "Microsoft";
+  }
+
+  return option.deviceClass === "desktop" ? "Generic PC" : "Generic";
 }
 
-function formatBrowserVersionLabel(value: string | null): string {
-  return value && value.trim().length > 0 ? value : "Unknown version";
+function createUserAgentQuickSetup(option: RemoteBrowserUserAgentOption | null): UserAgentQuickSetup {
+  if (!option) {
+    return createDefaultUserAgentQuickSetup();
+  }
+
+  return {
+    browserFamily: option.browserFamily,
+    browserVersion: option.browserVersion ?? "",
+    brand: inferUserAgentBrand(option),
+    device: option.deviceClass,
+    osFamily: option.osFamily,
+  };
+}
+
+function matchesQuickUserAgentDevice(option: RemoteBrowserUserAgentOption, device: UserAgentQuickDevice): boolean {
+  if (device === "any") {
+    return true;
+  }
+
+  if (device === "desktop" || device === "laptop") {
+    return option.deviceClass === "desktop";
+  }
+
+  return option.deviceClass === device;
+}
+
+function matchesUserAgentQuickSetup(option: RemoteBrowserUserAgentOption, filters: UserAgentQuickSetup): boolean {
+  return matchesQuickUserAgentDevice(option, filters.device)
+    && (!filters.browserFamily || option.browserFamily === filters.browserFamily)
+    && (!filters.browserVersion || option.browserVersion === filters.browserVersion)
+    && (!filters.osFamily || option.osFamily === filters.osFamily)
+    && (!filters.brand || inferUserAgentBrand(option) === filters.brand);
+}
+
+function formatQuickUserAgentMatchMeta(option: RemoteBrowserUserAgentOption): string {
+  const version = option.browserVersion ? `${option.browserFamily} ${option.browserVersion}` : option.browserFamily;
+  return [version, option.osFamily, option.deviceClass, inferUserAgentBrand(option)].join(" · ");
 }
 
 function sanitizeFilenameSegment(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-}
-
-function formatUserAgentOptionLabel(option: RemoteBrowserUserAgentOption): string {
-  return `${option.label} · ${formatBrowserVersionLabel(option.browserVersion)}`;
-}
-
-function getUserAgentPresetSelectValue(
-  draft: BrowserProfileDraft,
-  editorData: RemoteBrowserProfileEditorData | null,
-): string {
-  const option = findUserAgentOptionForDraft(draft, editorData);
-  if (option) {
-    return option.userAgent;
-  }
-
-  return draft.userAgent.trim().length === 0 ? BROWSER_DEFAULT_VIEWPORT_VALUE : CUSTOM_VIEWPORT_VALUE;
 }
 
 function describeProxySelection(
@@ -351,33 +422,6 @@ function getUserAgentSelectionSummary(
   return {
     label: "Custom user agent",
     detail: draft.userAgent.trim(),
-  };
-}
-
-function createInitialUserAgentFilters(
-  profile: RemoteBrowserProfileSettings,
-  editorData: RemoteBrowserProfileEditorData,
-): {
-  browserFamily: string;
-  browserVersion: string;
-  deviceClass: UserAgentDeviceFilter;
-  osFamily: string;
-} {
-  const matchingOption = editorData.userAgentOptions.find((option) => option.userAgent === profile.userAgent) ?? null;
-  if (matchingOption) {
-    return {
-      browserFamily: matchingOption.browserFamily,
-      browserVersion: matchingOption.browserVersion ?? DEFAULT_USER_AGENT_VERSION_FILTER,
-      deviceClass: matchingOption.deviceClass,
-      osFamily: matchingOption.osFamily,
-    };
-  }
-
-  return {
-    browserFamily: "all",
-    browserVersion: DEFAULT_USER_AGENT_VERSION_FILTER,
-    deviceClass: DEFAULT_USER_AGENT_DEVICE_FILTER,
-    osFamily: "all",
   };
 }
 
@@ -479,6 +523,26 @@ function TabButton({
   );
 }
 
+function ChoiceChip({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1.5 text-[11px] transition ${active ? "border-white/30 bg-white/[0.1] text-white" : "border-white/8 bg-black/20 text-[#9b9ba5] hover:border-white/15 hover:bg-black/30 hover:text-white"}`}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function BrowserProfileModalContent() {
   const activeBrowserProfileId = useInterfaceStore((state) => state.activeBrowserProfileId);
   const closeModal = useInterfaceStore((state) => state.closeModal);
@@ -492,12 +556,13 @@ export default function BrowserProfileModalContent() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [userAgentBrowserFilter, setUserAgentBrowserFilter] = useState<string>("all");
-  const [userAgentVersionFilter, setUserAgentVersionFilter] = useState<string>(DEFAULT_USER_AGENT_VERSION_FILTER);
-  const [userAgentOsFilter, setUserAgentOsFilter] = useState<string>("all");
-  const [userAgentDeviceFilter, setUserAgentDeviceFilter] = useState<UserAgentDeviceFilter>(DEFAULT_USER_AGENT_DEVICE_FILTER);
   const [userAgentActionMessage, setUserAgentActionMessage] = useState<string | null>(null);
   const [isUserAgentMenuOpen, setIsUserAgentMenuOpen] = useState(false);
+  const [userAgentSearchError, setUserAgentSearchError] = useState<string | null>(null);
+  const [userAgentSearchQuery, setUserAgentSearchQuery] = useState("");
+  const [userAgentSuggestions, setUserAgentSuggestions] = useState<RemoteBrowserUserAgentOption[]>([]);
+  const [isUserAgentSearchLoading, setIsUserAgentSearchLoading] = useState(false);
+  const [userAgentQuickSetup, setUserAgentQuickSetup] = useState<UserAgentQuickSetup>(createDefaultUserAgentQuickSetup());
 
   useEffect(() => {
     if (!activeBrowserProfileId) {
@@ -507,9 +572,13 @@ export default function BrowserProfileModalContent() {
       setDraft(null);
       setError(null);
       setSaveMessage(null);
-      setUserAgentVersionFilter(DEFAULT_USER_AGENT_VERSION_FILTER);
       setUserAgentActionMessage(null);
+      setUserAgentSearchError(null);
+      setUserAgentSearchQuery("");
+      setUserAgentSuggestions([]);
+      setIsUserAgentSearchLoading(false);
       setIsUserAgentMenuOpen(false);
+      setUserAgentQuickSetup(createDefaultUserAgentQuickSetup());
       return;
     }
 
@@ -525,17 +594,17 @@ export default function BrowserProfileModalContent() {
           return;
         }
 
-        const initialUserAgentFilters = createInitialUserAgentFilters(result.profile, result.editorData);
         setProfile(result.profile);
         setEditorData(result.editorData);
         setProxyOptions(result.proxyOptions);
         setDraft(createDraft(result.profile));
-        setUserAgentBrowserFilter(initialUserAgentFilters.browserFamily);
-        setUserAgentVersionFilter(initialUserAgentFilters.browserVersion);
-        setUserAgentOsFilter(initialUserAgentFilters.osFamily);
-        setUserAgentDeviceFilter(initialUserAgentFilters.deviceClass);
         setUserAgentActionMessage(null);
+        setUserAgentSearchError(null);
+        setUserAgentSearchQuery("");
+        setUserAgentSuggestions([]);
+        setIsUserAgentSearchLoading(false);
         setIsUserAgentMenuOpen(false);
+        setUserAgentQuickSetup(createUserAgentQuickSetup(findUserAgentOptionByValue(result.profile.userAgent, result.editorData)));
         setIsLoading(false);
       })
       .catch((nextError) => {
@@ -552,6 +621,49 @@ export default function BrowserProfileModalContent() {
     };
   }, [activeBrowserProfileId]);
 
+  useEffect(() => {
+    if (!activeBrowserProfileId || activeTab !== "user-agent") {
+      return;
+    }
+
+    const query = userAgentSearchQuery.trim();
+    if (query.length === 0) {
+      setUserAgentSuggestions([]);
+      setUserAgentSearchError(null);
+      setIsUserAgentSearchLoading(false);
+      return;
+    }
+
+    let disposed = false;
+    setUserAgentSearchError(null);
+    setIsUserAgentSearchLoading(true);
+    const timeoutId = window.setTimeout(() => {
+      void searchRemoteBrowserUserAgents(query, USER_AGENT_MATCH_PREVIEW_LIMIT)
+        .then((suggestions) => {
+          if (disposed) {
+            return;
+          }
+
+          setUserAgentSuggestions(suggestions);
+          setIsUserAgentSearchLoading(false);
+        })
+        .catch((nextError) => {
+          if (disposed) {
+            return;
+          }
+
+          setUserAgentSuggestions([]);
+          setUserAgentSearchError(nextError instanceof Error ? nextError.message : String(nextError));
+          setIsUserAgentSearchLoading(false);
+        });
+    }, 280);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeBrowserProfileId, activeTab, userAgentSearchQuery]);
+
   const validationMessage = useMemo(() => (draft ? validateDraft(draft) : null), [draft]);
   const viewportValidationMessage = useMemo(
     () => (draft ? validateDimension(draft.viewportWidth, "Viewport width") ?? validateDimension(draft.viewportHeight, "Viewport height") : null),
@@ -565,6 +677,46 @@ export default function BrowserProfileModalContent() {
     () => (draft ? findUserAgentOptionForDraft(draft, editorData) : null),
     [draft, editorData],
   );
+  const browserFamilyOptions = useMemo(
+    () => sortDistinctText((editorData?.userAgentOptions ?? []).map((option) => option.browserFamily)),
+    [editorData],
+  );
+  const osFamilyOptions = useMemo(
+    () => sortDistinctText((editorData?.userAgentOptions ?? []).map((option) => option.osFamily)),
+    [editorData],
+  );
+  const brandOptions = useMemo(
+    () => sortDistinctText((editorData?.userAgentOptions ?? []).map((option) => inferUserAgentBrand(option))),
+    [editorData],
+  );
+  const browserVersionOptions = useMemo(() => {
+    const options = (editorData?.userAgentOptions ?? [])
+      .filter((option) => !userAgentQuickSetup.browserFamily || option.browserFamily === userAgentQuickSetup.browserFamily)
+      .map((option) => option.browserVersion)
+      .filter((value): value is string => Boolean(value));
+    return sortDistinctText(options)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" }));
+  }, [editorData, userAgentQuickSetup.browserFamily]);
+  const matchingUserAgentOptions = useMemo(() => {
+    return (editorData?.userAgentOptions ?? [])
+      .filter((option) => matchesUserAgentQuickSetup(option, userAgentQuickSetup))
+      .sort((left, right) => {
+        if (left.userAgent === draft?.userAgent.trim()) {
+          return -1;
+        }
+
+        if (right.userAgent === draft?.userAgent.trim()) {
+          return 1;
+        }
+
+        const familyOrder = left.browserFamily.localeCompare(right.browserFamily, undefined, { sensitivity: "base" });
+        if (familyOrder !== 0) {
+          return familyOrder;
+        }
+
+        return (right.browserVersion ?? "").localeCompare(left.browserVersion ?? "", undefined, { numeric: true, sensitivity: "base" });
+      });
+  }, [draft?.userAgent, editorData, userAgentQuickSetup]);
   const viewportGroups = useMemo(() => {
     const groups = new Map<string, RemoteBrowserViewportPreset[]>();
     for (const preset of editorData?.viewportPresets ?? []) {
@@ -579,59 +731,6 @@ export default function BrowserProfileModalContent() {
     () => editorData?.searchEnginePresets ?? [],
     [editorData],
   );
-  const availableBrowserFamilies = useMemo(
-    () => uniqueSorted((editorData?.userAgentOptions ?? []).map((option) => option.browserFamily)),
-    [editorData],
-  );
-  const availableOsFamilies = useMemo(
-    () => uniqueSorted((editorData?.userAgentOptions ?? []).map((option) => option.osFamily)),
-    [editorData],
-  );
-  const availableBrowserVersions = useMemo(() => {
-    return uniqueSorted((editorData?.userAgentOptions ?? []).flatMap((option) => {
-      if (userAgentBrowserFilter !== "all" && option.browserFamily !== userAgentBrowserFilter) {
-        return [];
-      }
-
-      if (userAgentOsFilter !== "all" && option.osFamily !== userAgentOsFilter) {
-        return [];
-      }
-
-      if (userAgentDeviceFilter !== "all" && option.deviceClass !== userAgentDeviceFilter) {
-        return [];
-      }
-
-      return option.browserVersion ? [option.browserVersion] : [];
-    }));
-  }, [editorData, userAgentBrowserFilter, userAgentDeviceFilter, userAgentOsFilter]);
-
-  useEffect(() => {
-    if (userAgentVersionFilter !== DEFAULT_USER_AGENT_VERSION_FILTER && !availableBrowserVersions.includes(userAgentVersionFilter)) {
-      setUserAgentVersionFilter(DEFAULT_USER_AGENT_VERSION_FILTER);
-    }
-  }, [availableBrowserVersions, userAgentVersionFilter]);
-
-  const filteredUserAgentOptions = useMemo(() => {
-    return (editorData?.userAgentOptions ?? []).filter((option) => {
-      if (userAgentBrowserFilter !== "all" && option.browserFamily !== userAgentBrowserFilter) {
-        return false;
-      }
-
-      if (userAgentVersionFilter !== DEFAULT_USER_AGENT_VERSION_FILTER && option.browserVersion !== userAgentVersionFilter) {
-        return false;
-      }
-
-      if (userAgentOsFilter !== "all" && option.osFamily !== userAgentOsFilter) {
-        return false;
-      }
-
-      if (userAgentDeviceFilter !== "all" && option.deviceClass !== userAgentDeviceFilter) {
-        return false;
-      }
-
-      return true;
-    });
-  }, [editorData, userAgentBrowserFilter, userAgentDeviceFilter, userAgentOsFilter, userAgentVersionFilter]);
 
   if (!activeBrowserProfileId) {
     return null;
@@ -662,15 +761,10 @@ export default function BrowserProfileModalContent() {
         viewportWidth: normalizeOptionalDimension(draft.viewportWidth),
       });
 
-      const initialUserAgentFilters = createInitialUserAgentFilters(result.profile, result.editorData);
       setProfile(result.profile);
       setEditorData(result.editorData);
       setProxyOptions(result.proxyOptions);
       setDraft(createDraft(result.profile));
-      setUserAgentBrowserFilter(initialUserAgentFilters.browserFamily);
-      setUserAgentVersionFilter(initialUserAgentFilters.browserVersion);
-      setUserAgentOsFilter(initialUserAgentFilters.osFamily);
-      setUserAgentDeviceFilter(initialUserAgentFilters.deviceClass);
       setUserAgentActionMessage(null);
       setIsUserAgentMenuOpen(false);
       setSaveMessage(result.profile.isRunning
@@ -699,20 +793,28 @@ export default function BrowserProfileModalContent() {
 
   function applyUserAgentValue(userAgent: string): void {
     const nextValue = userAgent.trim();
-    const matchingOption = editorData?.userAgentOptions.find((option) => option.userAgent === nextValue) ?? null;
     setDraft((current) => current ? { ...current, userAgent: nextValue } : current);
+  }
 
-    if (matchingOption) {
-      setUserAgentBrowserFilter(matchingOption.browserFamily);
-      setUserAgentVersionFilter(matchingOption.browserVersion ?? DEFAULT_USER_AGENT_VERSION_FILTER);
-      setUserAgentOsFilter(matchingOption.osFamily);
-      setUserAgentDeviceFilter(matchingOption.deviceClass);
-      return;
-    }
+  function rememberUserAgentOption(option: RemoteBrowserUserAgentOption): void {
+    setEditorData((current) => {
+      if (!current || current.userAgentOptions.some((entry) => entry.userAgent === option.userAgent)) {
+        return current;
+      }
 
-    if (nextValue.length === 0) {
-      setUserAgentVersionFilter(DEFAULT_USER_AGENT_VERSION_FILTER);
-    }
+      return {
+        ...current,
+        userAgentOptions: [option, ...current.userAgentOptions],
+      };
+    });
+  }
+
+  function applyUserAgentOption(option: RemoteBrowserUserAgentOption): void {
+    applyUserAgentValue(option.userAgent);
+    rememberUserAgentOption(option);
+    setUserAgentSearchQuery(option.label);
+    setUserAgentQuickSetup(createUserAgentQuickSetup(option));
+    setUserAgentActionMessage(`Selected ${option.label}.`);
   }
 
   function handlePromptImportUserAgent(): void {
@@ -723,6 +825,11 @@ export default function BrowserProfileModalContent() {
     }
 
     applyUserAgentValue(nextValue);
+    const matchedOption = findUserAgentOptionByValue(nextValue, editorData);
+    if (matchedOption) {
+      rememberUserAgentOption(matchedOption);
+      setUserAgentQuickSetup(createUserAgentQuickSetup(matchedOption));
+    }
     setUserAgentActionMessage(nextValue.trim().length > 0
       ? "Imported the user agent string into this profile draft."
       : "Cleared the override. This profile will use the browser default user agent.");
@@ -888,133 +995,112 @@ export default function BrowserProfileModalContent() {
     }
 
     const userAgentSelection = getUserAgentSelectionSummary(draft, editorData);
-    const currentUserAgentSelectValue = getUserAgentPresetSelectValue(draft, editorData);
-    const currentUserAgentOptionVisible = currentUserAgentOption
-      ? filteredUserAgentOptions.some((option) => option.userAgent === currentUserAgentOption.userAgent)
-      : false;
     return (
       <Panel title="User Agent">
-        <div className="grid gap-3 md:grid-cols-4">
-          <div>
-            <FieldLabel label="Browser" />
-            <SelectInput value={userAgentBrowserFilter} onChange={(event) => setUserAgentBrowserFilter(event.target.value)}>
-              <option value="all">All browsers</option>
-              {availableBrowserFamilies.map((browserFamily) => (
-                <option key={browserFamily} value={browserFamily}>{browserFamily}</option>
-              ))}
-            </SelectInput>
-          </div>
-          <div>
-            <FieldLabel label="Version" />
-            <SelectInput value={userAgentVersionFilter} onChange={(event) => setUserAgentVersionFilter(event.target.value)}>
-              <option value={DEFAULT_USER_AGENT_VERSION_FILTER}>All versions</option>
-              {availableBrowserVersions.map((browserVersion) => (
-                <option key={browserVersion} value={browserVersion}>{browserVersion}</option>
-              ))}
-            </SelectInput>
-          </div>
-          <div>
-            <FieldLabel label="Operating System" />
-            <SelectInput value={userAgentOsFilter} onChange={(event) => setUserAgentOsFilter(event.target.value)}>
-              <option value="all">All operating systems</option>
-              {availableOsFamilies.map((osFamily) => (
-                <option key={osFamily} value={osFamily}>{osFamily}</option>
-              ))}
-            </SelectInput>
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <FieldLabel label="Device Class" />
-              <div className="relative shrink-0">
-                <button
-                  type="button"
-                  aria-expanded={isUserAgentMenuOpen}
-                  aria-label="User agent actions"
-                  onClick={() => setIsUserAgentMenuOpen((current) => !current)}
-                  className="rounded-[10px] bg-white/[0.05] px-2.5 py-1 text-[14px] leading-none text-[#d3d3d9] transition hover:bg-white/[0.1] hover:text-white"
-                >
-                  ...
-                </button>
-                {isUserAgentMenuOpen ? (
-                  <div className="absolute right-0 top-full z-10 mt-2 min-w-[200px] rounded-[12px] border border-white/10 bg-[#121216] p-1 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
-                    <button
-                      type="button"
-                      onClick={handlePromptImportUserAgent}
-                      className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
-                    >
-                      Import From Prompt
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDownloadUserAgent}
-                      className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
-                    >
-                      Download Current UA
-                    </button>
-                  </div>
-                ) : null}
-              </div>
+        <div className="rounded-[12px] bg-black/20 px-3 py-2.5 text-[11px] text-[#8b8b95]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-medium text-white">Current selection</p>
+              <p className="mt-1 leading-relaxed">{userAgentSelection.label}</p>
+              <p className="mt-2 truncate text-[10px] text-[#73737d]">{userAgentSelection.detail}</p>
             </div>
-            <SelectInput value={userAgentDeviceFilter} onChange={(event) => setUserAgentDeviceFilter(event.target.value as UserAgentDeviceFilter)}>
-              <option value="all">All devices</option>
-              <option value="desktop">Desktop</option>
-              <option value="tablet">Tablet</option>
-              <option value="mobile">Mobile</option>
-            </SelectInput>
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                aria-expanded={isUserAgentMenuOpen}
+                aria-label="User agent actions"
+                onClick={() => setIsUserAgentMenuOpen((current) => !current)}
+                className="rounded-[10px] bg-white/[0.05] px-2.5 py-1 text-[14px] leading-none text-[#d3d3d9] transition hover:bg-white/[0.1] hover:text-white"
+              >
+                ...
+              </button>
+              {isUserAgentMenuOpen ? (
+                <div className="absolute right-0 top-full z-10 mt-2 min-w-[220px] rounded-[12px] border border-white/10 bg-[#121216] p-1 shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+                  <button
+                    type="button"
+                    onClick={handlePromptImportUserAgent}
+                    className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Import From Prompt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applyUserAgentValue("");
+                      setUserAgentSearchQuery("");
+                      setUserAgentSuggestions([]);
+                      setUserAgentSearchError(null);
+                      setUserAgentQuickSetup(createDefaultUserAgentQuickSetup());
+                      setIsUserAgentMenuOpen(false);
+                      setUserAgentActionMessage("Reverted to the browser default user agent.");
+                    }}
+                    className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Use Browser Default
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadUserAgent}
+                    className="w-full rounded-[10px] px-3 py-2 text-left text-[11px] text-[#dfdfe4] transition hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Download Current UA
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
-        <div className="mt-3 rounded-[12px] bg-black/20 px-3 py-2.5 text-[11px] text-[#8b8b95]">
-          <p className="font-medium text-white">Current selection</p>
-          <p className="mt-1 leading-relaxed">{userAgentSelection.label}</p>
-          <p className="mt-2 truncate text-[10px] text-[#73737d]">{userAgentSelection.detail}</p>
-        </div>
-
-        <div className="mt-3">
-          <FieldLabel label="Preset" hint="Use the filters above to narrow the catalog, or switch back to the browser default." />
-          <SelectInput
-            value={currentUserAgentSelectValue}
+        <div className="mt-3 rounded-[12px] bg-black/20 px-3 py-3 text-[11px] text-[#8b8b95]">
+          <FieldLabel label="Search" hint="Type Chrome, Safari macOS, Windows Firefox, iPhone, Android, and the modal will ask the API for suggestions." />
+          <TextInput
+            value={userAgentSearchQuery}
+            placeholder="Search Chrome, Safari, iPhone, Windows..."
             onChange={(event) => {
-              const nextValue = event.target.value;
-              if (nextValue === BROWSER_DEFAULT_VIEWPORT_VALUE) {
-                applyUserAgentValue("");
-                setUserAgentActionMessage("Reverted to the browser default user agent.");
-                return;
-              }
-
-              if (nextValue === CUSTOM_VIEWPORT_VALUE) {
-                return;
-              }
-
-              applyUserAgentValue(nextValue);
-              const selectedOption = editorData?.userAgentOptions.find((option) => option.userAgent === nextValue) ?? null;
-              setUserAgentActionMessage(selectedOption ? `Selected ${selectedOption.label}.` : null);
+              setUserAgentSearchQuery(event.target.value);
+              setUserAgentActionMessage(null);
             }}
-          >
-            <option value={BROWSER_DEFAULT_VIEWPORT_VALUE}>Browser default</option>
-            {draft.userAgent.trim().length > 0 && !currentUserAgentOption ? (
-              <option value={CUSTOM_VIEWPORT_VALUE}>Keep current custom user agent</option>
-            ) : null}
-            {currentUserAgentOption && !currentUserAgentOptionVisible ? (
-              <option value={currentUserAgentOption.userAgent}>Keep current preset ({currentUserAgentOption.label})</option>
-            ) : null}
-            {filteredUserAgentOptions.map((option) => (
-              <option key={option.userAgent} value={option.userAgent}>
-                {formatUserAgentOptionLabel(option)}
-              </option>
-            ))}
-          </SelectInput>
+          />
 
-          {userAgentActionMessage ? (
-            <p className="mt-3 text-[11px] leading-relaxed text-[#9e9ea7]">{userAgentActionMessage}</p>
+          {userAgentSearchQuery.trim().length === 0 ? (
+            <p className="mt-3 rounded-[12px] bg-black/10 px-3 py-2.5 text-[11px] leading-relaxed text-[#8e8e97]">Start typing and this tab will fetch matching user agent variants from the API with debounce.</p>
+          ) : isUserAgentSearchLoading ? (
+            <p className="mt-3 rounded-[12px] bg-black/10 px-3 py-2.5 text-[11px] leading-relaxed text-[#8e8e97]">Searching suggestions...</p>
+          ) : userAgentSearchError ? (
+            <p className="mt-3 rounded-[12px] bg-rose-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-rose-100">{userAgentSearchError}</p>
+          ) : userAgentSuggestions.length > 0 ? (
+            <div className="mt-3 grid gap-2">
+              {userAgentSuggestions.map((option) => {
+                const isCurrent = draft.userAgent.trim() === option.userAgent;
+                return (
+                  <button
+                    key={option.userAgent}
+                    type="button"
+                    onClick={() => applyUserAgentOption(option)}
+                    className={`rounded-[12px] border px-3 py-2.5 text-left transition ${isCurrent ? "border-white/20 bg-white/[0.08]" : "border-white/8 bg-black/10 hover:border-white/12 hover:bg-black/20"}`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-medium text-white">{option.label}</p>
+                        <p className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#7d7d86]">{formatQuickUserAgentMatchMeta(option)}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] ${isCurrent ? "bg-white/[0.14] text-white" : "bg-white/[0.05] text-[#b4b4bc]"}`}>
+                        {isCurrent ? "Current" : "Use"}
+                      </span>
+                    </div>
+                    <p className="mt-2 break-all text-[10px] leading-relaxed text-[#72727c]">{option.userAgent}</p>
+                  </button>
+                );
+              })}
+            </div>
           ) : (
-            <p className="mt-3 text-[11px] leading-relaxed text-[#7d7d87]">
-              {filteredUserAgentOptions.length > 0
-                ? "Pick a filtered preset or open the menu for manual import and export actions."
-                : "No presets match the current filter combination. Broaden the filters or import a custom user agent from the menu."}
-            </p>
+            <p className="mt-3 rounded-[12px] bg-black/10 px-3 py-2.5 text-[11px] leading-relaxed text-[#8e8e97]">No suggestions for “{userAgentSearchQuery.trim()}” yet. Try something broader like Chrome, Safari, Windows, Android, or iPhone.</p>
           )}
         </div>
+
+        {userAgentActionMessage ? (
+          <p className="mt-3 text-[11px] leading-relaxed text-[#9e9ea7]">{userAgentActionMessage}</p>
+        ) : null}
       </Panel>
     );
   }

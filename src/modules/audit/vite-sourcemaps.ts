@@ -6,6 +6,7 @@ import {
 import { InvalidParamsError } from "../errors";
 import { defineExecutor, defineModule } from "../module";
 import {
+	AUDIT_NOTEBOOK_TYPE_OVERLAY,
 	AUDIT_TRAVERSAL_CONSOLE_PARAMS,
 	collectAuditSecretDetections,
 	fetchTextResource,
@@ -570,6 +571,7 @@ export const auditViteSourcemapsModule = defineModule({
 	id: "audit/vite-sourcemaps",
 	category: "audit",
 	description: "Confirm public Vite source maps and surface what they expose",
+	notebookTypeOverlay: AUDIT_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: AUDIT_VITE_SOURCEMAPS_CONSOLE_PARAMS,
 	executor,
 }).useDefault("url");

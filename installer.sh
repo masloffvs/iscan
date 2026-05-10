@@ -17,6 +17,9 @@ SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 
 WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-iscan-web.service}"
 VMSERVER_SERVICE_NAME="${VMSERVER_SERVICE_NAME:-iscan-vmserver.service}"
+XVFB_SERVICE_NAME="${XVFB_SERVICE_NAME:-iscan-xvfb.service}"
+XVFB_DISPLAY="${XVFB_DISPLAY:-:99}"
+XVFB_SCREEN="${XVFB_SCREEN:-1920x1080x24}"
 
 COMMON_PACKAGES=(
   arch-install-scripts
@@ -26,8 +29,10 @@ COMMON_PACKAGES=(
   ca-certificates
   curl
   dbus
+  ffmpeg
   git
   gtk3
+  libpulse
   libx11
   libxcomposite
   libxcursor
@@ -39,17 +44,21 @@ COMMON_PACKAGES=(
   mesa
   nspr
   nss
+  pipewire
+  pipewire-pulse
   proxychains-ng
   qemu-base
   sqlite
   tar
   unzip
+  wireplumber
   xorg-xauth
 )
 
 VDI_PACKAGES=(
   qemu-desktop
   systemd
+  xorg-server-xvfb
 )
 
 tmp_dir=""
@@ -146,8 +155,10 @@ verify_required_commands() {
   local commands=(
     bwrap
     curl
+    ffmpeg
     git
     pacstrap
+    pactl
     proxychains4
     qemu-img
     qemu-system-x86_64
@@ -163,6 +174,10 @@ verify_required_commands() {
 
   if [[ "$INSTALL_TYPE" == "vdi" && ! -x /usr/bin/systemctl ]]; then
     die "systemctl is required for INSTALL_TYPE=vdi but is not available."
+  fi
+
+  if [[ "$INSTALL_TYPE" == "vdi" && ! -x /usr/bin/Xvfb ]]; then
+    die "Xvfb is required for INSTALL_TYPE=vdi but is not available."
   fi
 }
 
@@ -233,18 +248,37 @@ EOF
 }
 
 write_vdi_service_units() {
+  local xvfb_unit_path="$tmp_dir/$XVFB_SERVICE_NAME"
   local vmserver_unit_path="$tmp_dir/$VMSERVER_SERVICE_NAME"
   local web_unit_path="$tmp_dir/$WEB_SERVICE_NAME"
+
+  cat >"$xvfb_unit_path" <<EOF
+[Unit]
+Description=iscan virtual X server
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=${STATE_DIR}
+ExecStart=/usr/bin/Xvfb ${XVFB_DISPLAY} -screen 0 ${XVFB_SCREEN} -nolisten tcp -ac -noreset
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
   cat >"$vmserver_unit_path" <<EOF
 [Unit]
 Description=iscan VM server
-After=network-online.target
-Wants=network-online.target
+After=network-online.target ${XVFB_SERVICE_NAME}
+Wants=network-online.target ${XVFB_SERVICE_NAME}
+Requires=${XVFB_SERVICE_NAME}
 
 [Service]
 Type=simple
 Environment=ISCAN_WORKDIR=${STATE_DIR}
+Environment=DISPLAY=${XVFB_DISPLAY}
 WorkingDirectory=${STATE_DIR}
 ExecStart=${INSTALL_BIN_DIR}/iscan --vmserver
 Restart=always
@@ -273,13 +307,14 @@ WantedBy=multi-user.target
 EOF
 
   run_root install -d -m 0755 "$SYSTEMD_DIR"
+  run_root install -m 0644 "$xvfb_unit_path" "$SYSTEMD_DIR/$XVFB_SERVICE_NAME"
   run_root install -m 0644 "$vmserver_unit_path" "$SYSTEMD_DIR/$VMSERVER_SERVICE_NAME"
   run_root install -m 0644 "$web_unit_path" "$SYSTEMD_DIR/$WEB_SERVICE_NAME"
 
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
     log "Reloading systemd and enabling iscan services..."
     run_root systemctl daemon-reload
-    run_root systemctl enable --now "$VMSERVER_SERVICE_NAME" "$WEB_SERVICE_NAME"
+    run_root systemctl enable --now "$XVFB_SERVICE_NAME" "$VMSERVER_SERVICE_NAME" "$WEB_SERVICE_NAME"
   else
     warn "systemd is not currently active. Unit files were written, but services were not enabled automatically."
   fi
@@ -292,8 +327,10 @@ print_summary() {
   log "  state dir    : ${STATE_DIR}"
 
   if [[ "$INSTALL_TYPE" == "vdi" ]]; then
+    log "  xvfb service : ${XVFB_SERVICE_NAME}"
     log "  web service  : ${WEB_SERVICE_NAME}"
     log "  vm service   : ${VMSERVER_SERVICE_NAME}"
+    log "  xvfb display : ${XVFB_DISPLAY} (${XVFB_SCREEN})"
     log "  web url      : http://127.0.0.1:8086"
     log "  vm api       : http://127.0.0.1:36665"
   else

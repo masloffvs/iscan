@@ -3,6 +3,7 @@ import {
 	createQemuPreviewReport,
 	ensureQemuKit,
 	parseOptionalString,
+	QEMU_NOTEBOOK_TYPE_OVERLAY,
 	resolveQemuPreset,
 } from "./qemu-shared";
 
@@ -14,6 +15,7 @@ export const qemuPreviewModule = defineModule<QemuPreviewParams>({
 	id: "kits/qemu/preview",
 	category: "kits",
 	description: "Build a notebook-safe QEMU launch preview without starting the VM",
+	notebookTypeOverlay: QEMU_NOTEBOOK_TYPE_OVERLAY,
 	consoleParams: [
 		{
 			name: "target",

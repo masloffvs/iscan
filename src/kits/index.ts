@@ -1,9 +1,10 @@
 export { ProxyKit, PROXY_KIT_ID } from "./proxy-kit";
 export type { ProxyProfile, ProxyType, ProxyTestResult } from "./proxy-kit";
 export { AiKit, AI_KIT_ID, AI_PROVIDER_KINDS, formatAiConnectionLabel } from "./ai-kit";
-export type { AiConnection, AiConnectionUpsertInput, AiGenerateTextRequest, AiKitOptions, AiProviderKind, ModelMessage } from "./ai-kit";
+export type { AiConnection, AiConnectionDeleteOptions, AiConnectionSaveOptions, AiConnectionScope, AiConnectionUpsertInput, AiGenerateTextRequest, AiKitOptions, AiProviderKind, ModelMessage } from "./ai-kit";
 export { DomainLookupKit, DOMAIN_LOOKUP_KIT_ID } from "./domain-lookup-kit";
 export { StorageKit, STORAGE_KIT_ID, $storageKit } from "./storage-kit";
+export { SettingsKit, SETTINGS_KIT_ID, $settings, type SettingsReadHandle } from "./settings-kit";
 export type {
 	DomainLookupKitOptions,
 	DomainLookupRecord,
@@ -17,7 +18,23 @@ export type {
 export type {
 	MicrolinkUaSnapshotRow,
 	MicrolinkUaSnapshotStatus,
+	ExploitDbEntryRow,
+	ExploitDbRawRow,
+	ExploitDbSourceRow,
+	ExploitDbSyncStatus,
+	PersistedExploitDbEntryRecord,
+	PersistedExploitDbRawRecord,
+	PersistedExploitDbSourceRecord,
 	PersistedMicrolinkUaSnapshotRecord,
+	PersistedSettingValueRecord,
+	PersistedUaExactAgentRecord,
+	PersistedUaPatternRecord,
+	PersistedUaSourceRecord,
+	StoredSettingValueRow,
+	UaExactAgentRow,
+	UaPatternRow,
+	UaSourceRow,
+	UaSourceSyncStatus,
 	PersistedZoomEyeHostRecord,
 	PersistedZoomEyeQueryHistoryRecord,
 	ZoomEyeHostSelectRow,
@@ -31,6 +48,34 @@ export type {
 	MicrolinkUaPayload,
 	MicrolinkUaStatus,
 } from "./microlink-ua-kit";
+export {
+	ExploitDbKit,
+	EXPLOITDB_KIT_ID,
+	EXPLOITDB_SOURCE_ID,
+	createExploitDbListingAxiosInstanceId,
+	createExploitDbRawAxiosInstanceId,
+} from "./exploitdb-kit";
+export type {
+	ExploitDbEntry,
+	ExploitDbEntryFilters,
+	ExploitDbKitOptions,
+	ExploitDbRaw,
+	ExploitDbRefreshMode,
+	ExploitDbRefreshOptions,
+	ExploitDbRefreshPassSummary,
+	ExploitDbRefreshResult,
+	ExploitDbSourceStatus,
+} from "./exploitdb-kit";
+export { UaKit, UA_KIT_ID, UA_MICROLINK_SOURCE_ID } from "./ua-kit";
+export type {
+	UaExactAgent,
+	UaExactAgentFilters,
+	UaKitOptions,
+	UaPattern,
+	UaPatternFilters,
+	UaRefreshResult,
+	UaSourceStatus,
+} from "./ua-kit";
 export { CloakKit, CLOAK_KIT_ID } from "./cloak-kit";
 export type { CloakProfile } from "./cloak-kit";
 export { ElasticSearchKit, ELASTICSEARCH_KIT_ID } from "./elasticsearch-kit";
@@ -121,6 +166,18 @@ export type {
 	GitTagOptions,
 	GitWorkingDirectory,
 } from "./git-kit";
+export { PortScanKit, PORT_SCAN_KIT_ID, normalizePortScanOptions } from "./port-scan-kit";
+export type {
+	PortScanCommandExamples,
+	PortScanHostPolicy,
+	PortScanListFilters,
+	PortScanNormalizedOptions,
+	PortScanPolicySnapshot,
+	PortScanResult,
+	PortScanRunOptions,
+	PortScanSavedScan,
+	PortScanSelectionMode,
+} from "./port-scan-kit";
 export { PacmanKit, PACMAN_KIT_ID } from "./pacman-kit";
 export type {
 	AurDownloadOptions,

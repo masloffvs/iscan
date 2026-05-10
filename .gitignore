@@ -42,3 +42,4 @@ dist
 .vscode
 .specify
 .tmp
+*.qcow2

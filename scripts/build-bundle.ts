@@ -6,6 +6,7 @@ import { buildWebAssets } from "../src/web/build";
 const projectRoot = resolve(import.meta.dir, "..");
 const distRoot = resolve(projectRoot, "dist");
 const binaryPath = resolve(distRoot, "iscan");
+const compileTarget = process.env.BUN_COMPILE_TARGET ?? "bun-linux-x64-baseline";
 
 const runtimeAssets = [
 	{ pathSegments: ["config.yml"], recursive: false },
@@ -40,7 +41,16 @@ await buildWebAssets({
 });
 
 runCheckedCommand(
-	[process.execPath, "build", "--compile", "index.ts", "--outfile", binaryPath],
+	[
+		process.execPath,
+		"build",
+		"--compile",
+		"--target",
+		compileTarget,
+		"index.ts",
+		"--outfile",
+		binaryPath,
+	],
 	"Failed to compile the Bun executable.",
 );
 

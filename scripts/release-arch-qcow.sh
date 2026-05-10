@@ -10,6 +10,15 @@ KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 IMAGE_NAME="${IMAGE_NAME:-Arch-Linux-x86_64-cloudimg.qcow2}"
 BUILD_SCRIPT="${BUILD_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-arch-qcow.sh}"
 SKIP_UPLOAD="${SKIP_UPLOAD:-0}"
+WORK_IMAGE_SIZE="${WORK_IMAGE_SIZE:-12G}"
+GUEST_INSTALL_TYPE="${GUEST_INSTALL_TYPE:-vdi}"
+GUEST_ROOT_LOGIN="${GUEST_ROOT_LOGIN:-root}"
+GUEST_ROOT_PASSWORD="${GUEST_ROOT_PASSWORD:-root}"
+GUEST_SERIAL_CONSOLE="${GUEST_SERIAL_CONSOLE:-ttyS0}"
+GUEST_ROOT_FILESYSTEM="${GUEST_ROOT_FILESYSTEM:-btrfs}"
+
+readonly RELEASE_DEFAULTS_NOTES_START='<!-- iscan-arch-qcow-defaults:start -->'
+readonly RELEASE_DEFAULTS_NOTES_END='<!-- iscan-arch-qcow-defaults:end -->'
 
 artifact_dir=""
 
@@ -49,6 +58,58 @@ require_commands() {
   if [[ ! -x "$BUILD_SCRIPT" ]]; then
     die "build script is missing or not executable: $BUILD_SCRIPT"
   fi
+}
+
+build_release_defaults_block() {
+  cat <<EOF
+${RELEASE_DEFAULTS_NOTES_START}
+## Arch qcow defaults
+
+- Artifact: ${IMAGE_NAME}
+- Format: qcow2
+- Install profile: ${GUEST_INSTALL_TYPE}
+- Expanded disk size: ${WORK_IMAGE_SIZE}
+- Default login: ${GUEST_ROOT_LOGIN}
+- Default password: ${GUEST_ROOT_PASSWORD}
+- Root filesystem: ${GUEST_ROOT_FILESYSTEM}
+- Serial console: ${GUEST_SERIAL_CONSOLE}
+${RELEASE_DEFAULTS_NOTES_END}
+EOF
+}
+
+merge_release_notes() {
+  local current_notes="$1"
+  local defaults_block="$2"
+
+  if [[ "$current_notes" == *"$RELEASE_DEFAULTS_NOTES_START"* && "$current_notes" == *"$RELEASE_DEFAULTS_NOTES_END"* ]]; then
+    local prefix="${current_notes%%"$RELEASE_DEFAULTS_NOTES_START"*}"
+    local suffix="${current_notes#*"$RELEASE_DEFAULTS_NOTES_END"}"
+    printf '%s%s%s' "$prefix" "$defaults_block" "$suffix"
+    return
+  fi
+
+  if [[ -n "$current_notes" ]]; then
+    printf '%s\n\n%s' "$current_notes" "$defaults_block"
+    return
+  fi
+
+  printf '%s' "$defaults_block"
+}
+
+update_release_notes() {
+  local current_notes
+  local merged_notes
+  local defaults_block
+  local notes_path="${artifact_dir%/}/release-notes.md"
+
+  current_notes="$(gh release view "$RELEASE_TAG" -R "$REPO_SLUG" --json body --jq '.body // ""')"
+  defaults_block="$(build_release_defaults_block)"
+  merged_notes="$(merge_release_notes "$current_notes" "$defaults_block")"
+
+  printf '%s\n' "$merged_notes" > "$notes_path"
+
+  log "Updating GitHub release notes with qcow defaults"
+  gh release edit "$RELEASE_TAG" --notes-file "$notes_path" -R "$REPO_SLUG" >/dev/null
 }
 
 ensure_release_exists() {
@@ -94,6 +155,10 @@ main() {
     log "  $image_path"
     log "  $sha256_path"
     log "  $sha512_path"
+    log "Release defaults:"
+    while IFS= read -r line; do
+      log "  $line"
+    done < <(build_release_defaults_block)
     return
   fi
 
@@ -109,6 +174,8 @@ main() {
   log "  $image_path"
   log "  $sha256_path"
   log "  $sha512_path"
+
+  update_release_notes
 
   if [[ "$KEEP_ARTIFACTS" == "1" ]]; then
     log "Keeping artifact directory: $artifact_dir"

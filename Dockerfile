@@ -69,14 +69,9 @@ WORKDIR /workspace
 
 # Copy only what's needed for runtime
 COPY --from=builder /workspace/node_modules ./node_modules
-COPY --from=builder /workspace/dist ./dist
-COPY --from=builder /workspace/web-build ./web-build
-COPY --from=builder /workspace/package.json /workspace/bun.lock /workspace/index.ts ./
-COPY --from=builder /workspace/src ./src
-COPY --from=builder /workspace/web ./web
-COPY --from=builder /workspace/scripts ./scripts
+COPY --from=builder /workspace/dist/ ./
 COPY --from=builder /workspace/nginx ./nginx
-COPY --from=builder /workspace/config.yml ./config.yml
+COPY --from=builder /workspace/scripts ./scripts
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/iscan-entrypoint
 RUN chmod +x /usr/local/bin/iscan-entrypoint \

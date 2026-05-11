@@ -5,61 +5,31 @@ set -Eeuo pipefail
 umask 022
 
 REPO_SLUG="${REPO_SLUG:-masloffvs/iscan}"
-RELEASE_TAG="${RELEASE_TAG:-latest}"
-RELEASE_FILE="${RELEASE_FILE:-iscan-linux-x64.tar.gz}"
-ARCHIVE_URL="${ARCHIVE_URL:-https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}/${RELEASE_FILE}}"
+DOCKER_REGISTRY="${DOCKER_REGISTRY:-ghcr.io}"
+DOCKER_IMAGE_REPOSITORY="${DOCKER_IMAGE_REPOSITORY:-${REPO_SLUG}}"
+DOCKER_TAG="${DOCKER_TAG:-latest}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-${DOCKER_REGISTRY}/${DOCKER_IMAGE_REPOSITORY}:${DOCKER_TAG}}"
 
-INSTALL_TYPE="${INSTALL_TYPE:-standard}"
+INSTALL_TYPE="${INSTALL_TYPE:-docker}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/iscan}"
 INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
 STATE_DIR="${STATE_DIR:-/var/lib/iscan}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
-
-WEB_SERVICE_NAME="${WEB_SERVICE_NAME:-iscan-web.service}"
-VMSERVER_SERVICE_NAME="${VMSERVER_SERVICE_NAME:-iscan-vmserver.service}"
-XVFB_SERVICE_NAME="${XVFB_SERVICE_NAME:-iscan-xvfb.service}"
-XVFB_DISPLAY="${XVFB_DISPLAY:-:99}"
+COMPOSE_FILE_NAME="${COMPOSE_FILE_NAME:-docker-compose.yml}"
+WEB_PORT="${WEB_PORT:-8086}"
+VMSERVER_PORT="${VMSERVER_PORT:-36665}"
+CONTAINER_WORKDIR="${CONTAINER_WORKDIR:-/var/lib/iscan}"
+CONTAINER_DISPLAY="${CONTAINER_DISPLAY:-:99}"
+CONTAINER_RUNTIME_DIR="${CONTAINER_RUNTIME_DIR:-/tmp/runtime-iscan}"
 XVFB_SCREEN="${XVFB_SCREEN:-1920x1080x24}"
 
 COMMON_PACKAGES=(
-  arch-install-scripts
-  base-devel
   bash
-  bun
-  bubblewrap
   ca-certificates
   curl
-  dbus
-  ffmpeg
-  git
-  gtk3
-  libpulse
-  libx11
-  libxcomposite
-  libxcursor
-  libxi
-  libxkbcommon
-  libxrandr
-  libxrender
-  libxtst
-  mesa
-  nspr
-  nss
-  pipewire
-  pipewire-pulse
-  proxychains-ng
-  qemu-base
-  sqlite
-  tar
-  unzip
-  wireplumber
-  xorg-xauth
-)
-
-VDI_PACKAGES=(
-  qemu-desktop
-  systemd
-  xorg-server-xvfb
+  docker
+  docker-buildx
+  docker-compose
 )
 
 tmp_dir=""
@@ -128,10 +98,14 @@ require_arch_linux() {
 
 validate_install_type() {
   case "$INSTALL_TYPE" in
+    docker)
+      ;;
     standard|vdi)
+      warn "INSTALL_TYPE=${INSTALL_TYPE} is deprecated. The installer now deploys the Docker stack instead."
+      INSTALL_TYPE="docker"
       ;;
     *)
-      die "Unsupported INSTALL_TYPE='$INSTALL_TYPE'. Use 'standard' or 'vdi'."
+      die "Unsupported INSTALL_TYPE='$INSTALL_TYPE'. Only 'docker' is supported."
       ;;
   esac
 }
@@ -143,28 +117,14 @@ require_pacman() {
 }
 
 install_packages() {
-  local packages=("${COMMON_PACKAGES[@]}")
-  if [[ "$INSTALL_TYPE" == "vdi" ]]; then
-    packages+=("${VDI_PACKAGES[@]}")
-  fi
-
   log "Installing required Arch packages with pacman..."
-  run_root pacman -Syu --noconfirm --needed "${packages[@]}"
+  run_root pacman -Syu --noconfirm --needed "${COMMON_PACKAGES[@]}"
 }
 
 verify_required_commands() {
   local commands=(
-    bwrap
-    bun
     curl
-    ffmpeg
-    git
-    pacstrap
-    pactl
-    proxychains4
-    qemu-img
-    qemu-system-x86_64
-    tar
+    docker
   )
 
   local command_name
@@ -174,195 +134,290 @@ verify_required_commands() {
     fi
   done
 
-  if [[ "$INSTALL_TYPE" == "vdi" && ! -x /usr/bin/systemctl ]]; then
-    die "systemctl is required for INSTALL_TYPE=vdi but is not available."
+  if ! docker compose version >/dev/null 2>&1; then
+    die "Docker Compose is not available via 'docker compose'."
   fi
 
-  if [[ "$INSTALL_TYPE" == "vdi" && ! -x /usr/bin/Xvfb ]]; then
-    die "Xvfb is required for INSTALL_TYPE=vdi but is not available."
+  if [[ -d /run/systemd/system ]] && ! command -v systemctl >/dev/null 2>&1; then
+    die "systemctl is expected on this host but is not available."
   fi
 }
 
-download_release_archive() {
-  local archive_path="$1"
+ensure_docker_runtime() {
+  if run_root docker info >/dev/null 2>&1; then
+    return
+  fi
 
-  log "Downloading release bundle from ${ARCHIVE_URL}..."
-  curl --fail --show-error --location --retry 3 --retry-all-errors "$ARCHIVE_URL" --output "$archive_path"
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+    log "Enabling and starting Docker..."
+    run_root systemctl enable --now docker
+  fi
+
+  if ! run_root docker info >/dev/null 2>&1; then
+    die "Docker daemon is not reachable after installation. Start it manually and rerun the installer."
+  fi
 }
 
-install_release_bundle() {
-  local archive_path="$1"
-  local preserved_config_path="$tmp_dir/config.yml"
+write_default_config() {
+  local config_path="$STATE_DIR/config.yml"
+  if run_root test -f "$config_path"; then
+    log "Preserving the existing config.yml from ${STATE_DIR}."
+    return
+  fi
 
+  log "Writing bootstrap config.yml into ${STATE_DIR}..."
+  cat >"$tmp_dir/config.yml" <<'EOF'
+services:
+  hunter:
+    AUTH_METHOD: bearer
+    API_KEY: CHANGEME
+    BEARER_TOKEN: CHANGEME
+  storage:
+    DATABASE_URL: "data/iscan.db"
+  portScan:
+    ALLOW_HOSTS: ["*"]
+    DENY_HOSTS: []
+    ALLOW_PRIVATE_ADDRESSES: true
+    ALLOW_LOOPBACK: true
+    DENY_PUBLIC_ADDRESSES: false
+  exploitdb:
+    LIST_URL: "https://www.exploit-db.com/"
+    RAW_URL_TEMPLATE: "https://www.exploit-db.com/raw/{id}"
+    DOWNLOAD_URL_TEMPLATE: "https://www.exploit-db.com/download/{id}"
+    REFRESH_INTERVAL_MS: 86400000
+    REQUEST_TIMEOUT_MS: 15000
+    PAGE_SIZE: 15
+    RECENT_PAGE_WINDOW: 8
+    BACKFILL_PAGE_BUDGET: 64
+    RAW_FETCH_CONCURRENCY: 4
+    REFRESH_ON_EMPTY: true
+    BACKFILL_ON_EMPTY: true
+  ua:
+    REFRESH_INTERVAL_MS: 86400000
+    STALE_AFTER_MS: 86400000
+    REFRESH_ON_EMPTY: true
+    SOURCES:
+      - ID: microlink
+        KIND: microlink-json
+        URL: "https://microlink.io/user-agents.json"
+        ENABLED: true
+        CATEGORIES: [user, crawler, ai]
+        RECORD_KINDS: [exact]
+      - ID: arcjet-well-known-bots
+        KIND: arcjet-well-known-bots
+        URL: "https://raw.githubusercontent.com/arcjet/well-known-bots/main/well-known-bots.json"
+        ENABLED: true
+        RECORD_KINDS: [exact, pattern]
+      - ID: cloudflare-bot-directory
+        KIND: cloudflare-bot-directory
+        URL: "https://raw.githubusercontent.com/microlinkhq/cloudflare-bot-directory/master/src/index.json"
+        ENABLED: true
+        RECORD_KINDS: [exact, pattern]
+      - ID: crawler-user-agents
+        KIND: crawler-user-agents
+        URL: "https://raw.githubusercontent.com/monperrus/crawler-user-agents/master/crawler-user-agents.json"
+        ENABLED: true
+        RECORD_KINDS: [exact, pattern]
+
+runtime:
+  backgroundWorkers:
+    SMOL: true
+    METRICS_INTERVAL_MS: 1000
+    WATCH_REFRESH_MS: 1000
+    LOG_RETENTION:
+      MAX_ENTRIES_PER_WORKER: 5000
+    RESOURCE_LIMITS:
+      MAX_YOUNG_GENERATION_SIZE_MB: 16
+      MAX_OLD_GENERATION_SIZE_MB: 128
+      CODE_RANGE_SIZE_MB: 64
+      STACK_SIZE_MB: 8
+
+manifest:
+  dependencies:
+    proxychains:
+      binary: proxychains4
+      aliases:
+        - proxychains
+      required: true
+      description: Proxy wrapper used before launching qemu.
+    qemu-system:
+      binary: qemu-system-x86_64
+      required: true
+      description: QEMU system emulator used to run virtual machines.
+    qemu-img:
+      binary: qemu-img
+      required: true
+      description: QEMU disk image utility.
+  kits:
+    qemu:
+      architecture: x86_64
+      machine: q35
+      accelerator: kvm
+      memoryMb: 2048
+      useProxy: false
+      autoBootstrapRouterOnLaunch: false
+      systemDependencyId: qemu-system
+      imageDependencyId: qemu-img
+      proxyDependencyId: proxychains
+      defaultArgs: []
+EOF
+
+  run_root install -m 0644 "$tmp_dir/config.yml" "$config_path"
+}
+
+prepare_install_layout() {
   run_root install -d -m 0755 "$INSTALL_ROOT"
   run_root install -d -m 0755 "$STATE_DIR"
-
-  if run_root test -f "$INSTALL_ROOT/config.yml"; then
-    log "Preserving the existing config.yml from ${INSTALL_ROOT}."
-    run_root cp "$INSTALL_ROOT/config.yml" "$preserved_config_path"
-  fi
-
-  log "Installing release files into ${INSTALL_ROOT}..."
-  run_root rm -rf \
-    "$INSTALL_ROOT/iscan" \
-    "$INSTALL_ROOT/index.ts" \
-    "$INSTALL_ROOT/src" \
-    "$INSTALL_ROOT/web" \
-    "$INSTALL_ROOT/web-build" \
-    "$INSTALL_ROOT/node_modules" \
-    "$INSTALL_ROOT/package.json" \
-    "$INSTALL_ROOT/bun.lock" \
-    "$INSTALL_ROOT/tsconfig.json" \
-    "$INSTALL_ROOT/README.md"
-  run_root tar -xzf "$archive_path" -C "$INSTALL_ROOT"
-
-  if [[ -f "$preserved_config_path" ]]; then
-    run_root install -m 0644 "$preserved_config_path" "$INSTALL_ROOT/config.yml"
-  fi
-
   run_root install -d -m 0755 "$STATE_DIR/data" "$STATE_DIR/.iscan"
 }
 
-install_runtime_dependencies() {
-  log "Installing Bun runtime dependencies into ${INSTALL_ROOT}..."
-  run_root bun install --cwd "$INSTALL_ROOT" --frozen-lockfile --production
+write_compose_file() {
+  local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
+
+  cat >"$tmp_dir/$COMPOSE_FILE_NAME" <<EOF
+x-iscan-base: &iscan-base
+  image: ${DOCKER_IMAGE}
+  privileged: true
+  working_dir: ${CONTAINER_WORKDIR}
+  environment:
+    DISPLAY: ${CONTAINER_DISPLAY}
+    DOCKER_HOST: unix:///var/run/docker.sock
+    ISCAN_RUNTIME_CWD: ${CONTAINER_WORKDIR}
+    XDG_RUNTIME_DIR: ${CONTAINER_RUNTIME_DIR}
+  volumes:
+    - ${STATE_DIR}:${CONTAINER_WORKDIR}
+    - /var/run/docker.sock:/var/run/docker.sock
+  restart: unless-stopped
+
+services:
+  iscan:
+    <<: *iscan-base
+    restart: "no"
+    stdin_open: true
+    tty: true
+    command: ["bun", "/workspace/index.ts"]
+
+  iscan-vmserver:
+    <<: *iscan-base
+    ports:
+      - "127.0.0.1:${VMSERVER_PORT}:36665"
+    command:
+      - sh
+      - -lc
+      - |
+        mkdir -p ${CONTAINER_RUNTIME_DIR}
+        chmod 700 ${CONTAINER_RUNTIME_DIR}
+        Xvfb ${CONTAINER_DISPLAY} -screen 0 ${XVFB_SCREEN} -nolisten tcp -ac -noreset >/tmp/iscan-xvfb.log 2>&1 &
+        exec bun /workspace/index.ts --vmserver
+
+  iscan-web:
+    <<: *iscan-base
+    depends_on:
+      - iscan-vmserver
+    ports:
+      - "127.0.0.1:${WEB_PORT}:8086"
+    command: ["bun", "/workspace/index.ts", "--web"]
+EOF
+
+  run_root install -m 0644 "$tmp_dir/$COMPOSE_FILE_NAME" "$compose_path"
 }
 
-write_launcher() {
-  local launcher_path="$tmp_dir/iscan-launcher"
+pull_and_start_stack() {
+  local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
 
-  cat >"$launcher_path" <<EOF
-#!/usr/bin/env bash
+  log "Pulling Docker image ${DOCKER_IMAGE}..."
+  run_root docker compose -f "$compose_path" pull
 
-set -Eeuo pipefail
-
-install_root="${INSTALL_ROOT}"
-entrypoint_path="${INSTALL_ROOT}/index.ts"
-default_root_state_dir="${STATE_DIR}"
-bun_path="$(command -v bun 2>/dev/null || true)"
-
-if [[ -z "\$bun_path" || ! -x "\$bun_path" ]]; then
-  printf 'iscan launcher error: bun was not found in PATH.\n' >&2
-  exit 1
-fi
-
-if [[ ! -f "\$entrypoint_path" ]]; then
-  printf 'iscan launcher error: %s is missing.\n' "\$entrypoint_path" >&2
-  exit 1
-fi
-
-if [[ -n "\${ISCAN_WORKDIR:-}" ]]; then
-  workdir="\${ISCAN_WORKDIR}"
-elif [[ "\$(id -u)" -eq 0 ]]; then
-  workdir="\$default_root_state_dir"
-else
-  workdir="\${XDG_STATE_HOME:-\$HOME/.local/state}/iscan"
-fi
-
-mkdir -p "\$workdir" "\$workdir/data" "\$workdir/.iscan"
-cd "\$workdir"
-
-exec "\$bun_path" "\$entrypoint_path" "\$@"
-EOF
-
-  run_root install -d -m 0755 "$INSTALL_BIN_DIR"
-  run_root install -m 0755 "$launcher_path" "$INSTALL_BIN_DIR/iscan"
+  log "Starting iscan Docker services..."
+  run_root docker compose -f "$compose_path" up -d iscan-vmserver iscan-web
 }
 
-write_vdi_service_units() {
-  local xvfb_unit_path="$tmp_dir/$XVFB_SERVICE_NAME"
-  local vmserver_unit_path="$tmp_dir/$VMSERVER_SERVICE_NAME"
-  local web_unit_path="$tmp_dir/$WEB_SERVICE_NAME"
+write_management_unit() {
+  local unit_path="$tmp_dir/iscan-docker.service"
+  local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
 
-  cat >"$xvfb_unit_path" <<EOF
+  cat >"$unit_path" <<EOF
 [Unit]
-Description=iscan virtual X server
-After=local-fs.target
+Description=iscan Docker stack
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
 
 [Service]
-Type=simple
-WorkingDirectory=${STATE_DIR}
-ExecStart=/usr/bin/Xvfb ${XVFB_DISPLAY} -screen 0 ${XVFB_SCREEN} -nolisten tcp -ac -noreset
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat >"$vmserver_unit_path" <<EOF
-[Unit]
-Description=iscan VM server
-After=network-online.target ${XVFB_SERVICE_NAME}
-Wants=network-online.target ${XVFB_SERVICE_NAME}
-Requires=${XVFB_SERVICE_NAME}
-
-[Service]
-Type=simple
-Environment=ISCAN_WORKDIR=${STATE_DIR}
-Environment=DISPLAY=${XVFB_DISPLAY}
-WorkingDirectory=${STATE_DIR}
-ExecStart=${INSTALL_BIN_DIR}/iscan --vmserver
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat >"$web_unit_path" <<EOF
-[Unit]
-Description=iscan web interface
-After=network-online.target ${VMSERVER_SERVICE_NAME}
-Wants=network-online.target ${VMSERVER_SERVICE_NAME}
-
-[Service]
-Type=simple
-Environment=ISCAN_WORKDIR=${STATE_DIR}
-WorkingDirectory=${STATE_DIR}
-ExecStart=${INSTALL_BIN_DIR}/iscan --web
-Restart=always
-RestartSec=2
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=${INSTALL_ROOT}
+ExecStart=/usr/bin/docker compose -f ${compose_path} up -d iscan-vmserver iscan-web
+ExecStop=/usr/bin/docker compose -f ${compose_path} down
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
   run_root install -d -m 0755 "$SYSTEMD_DIR"
-  run_root install -m 0644 "$xvfb_unit_path" "$SYSTEMD_DIR/$XVFB_SERVICE_NAME"
-  run_root install -m 0644 "$vmserver_unit_path" "$SYSTEMD_DIR/$VMSERVER_SERVICE_NAME"
-  run_root install -m 0644 "$web_unit_path" "$SYSTEMD_DIR/$WEB_SERVICE_NAME"
+  run_root install -m 0644 "$unit_path" "$SYSTEMD_DIR/iscan-docker.service"
 
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
-    log "Reloading systemd and enabling iscan services..."
+    log "Reloading systemd and enabling iscan-docker.service..."
     run_root systemctl daemon-reload
-    run_root systemctl enable --now "$XVFB_SERVICE_NAME" "$VMSERVER_SERVICE_NAME" "$WEB_SERVICE_NAME"
+    run_root systemctl enable --now iscan-docker.service
   else
-    warn "systemd is not currently active. Unit files were written, but services were not enabled automatically."
+    warn "systemd is not currently active. Docker containers were started, but iscan-docker.service was not enabled automatically."
   fi
+}
+
+write_launcher() {
+  local launcher_path="$tmp_dir/iscan-launcher"
+  local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
+
+  cat >"$launcher_path" <<EOF
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+compose_file="${compose_path}"
+
+if [[ ! -f "\$compose_file" ]]; then
+  printf 'iscan launcher error: %s is missing.\n' "\$compose_file" >&2
+  exit 1
+fi
+
+docker_cmd=(docker)
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1; then
+    docker_cmd=(sudo docker)
+  else
+    printf 'iscan launcher error: docker daemon is not accessible and sudo is unavailable.\n' >&2
+    exit 1
+  fi
+fi
+
+if [[ \$# -gt 0 ]]; then
+  case "\$1" in
+    up|down|pull|ps|logs|restart|start|stop)
+      exec "\${docker_cmd[@]}" compose -f "\$compose_file" "\$@"
+      ;;
+  esac
+fi
+
+exec "\${docker_cmd[@]}" compose -f "\$compose_file" run --rm iscan "\$@"
+EOF
+
+  run_root install -d -m 0755 "$INSTALL_BIN_DIR"
+  run_root install -m 0755 "$launcher_path" "$INSTALL_BIN_DIR/iscan"
 }
 
 print_summary() {
   log "iscan installation completed."
+  log "  image        : ${DOCKER_IMAGE}"
   log "  install root : ${INSTALL_ROOT}"
+  log "  compose file : ${INSTALL_ROOT}/${COMPOSE_FILE_NAME}"
   log "  launcher     : ${INSTALL_BIN_DIR}/iscan"
-  log "  runtime      : bun ${INSTALL_ROOT}/index.ts"
   log "  state dir    : ${STATE_DIR}"
-
-  if [[ "$INSTALL_TYPE" == "vdi" ]]; then
-    log "  xvfb service : ${XVFB_SERVICE_NAME}"
-    log "  web service  : ${WEB_SERVICE_NAME}"
-    log "  vm service   : ${VMSERVER_SERVICE_NAME}"
-    log "  xvfb display : ${XVFB_DISPLAY} (${XVFB_SCREEN})"
-    log "  web url      : http://127.0.0.1:8086"
-    log "  vm api       : http://127.0.0.1:36665"
-  else
-    log "Run 'iscan --help' to inspect available modes."
-  fi
-
-  if ! command -v paru >/dev/null 2>&1; then
-    warn "paru is not installed from the official Arch repositories. Install it manually if you need AUR helper workflows."
-  fi
+  log "  config       : ${STATE_DIR}/config.yml"
+  log "  web url      : http://127.0.0.1:${WEB_PORT}"
+  log "  vm api       : http://127.0.0.1:${VMSERVER_PORT}"
+  warn "Edit ${STATE_DIR}/config.yml to replace placeholder Hunter credentials before serious use."
 }
 
 main() {
@@ -372,18 +427,16 @@ main() {
   require_pacman
 
   tmp_dir="$(mktemp -d -t iscan-installer.XXXXXX)"
-  local archive_path="$tmp_dir/$RELEASE_FILE"
 
   install_packages
   verify_required_commands
-  download_release_archive "$archive_path"
-  install_release_bundle "$archive_path"
-  install_runtime_dependencies
+  ensure_docker_runtime
+  prepare_install_layout
+  write_default_config
+  write_compose_file
   write_launcher
-
-  if [[ "$INSTALL_TYPE" == "vdi" ]]; then
-    write_vdi_service_units
-  fi
+  pull_and_start_stack
+  write_management_unit
 
   print_summary
 }

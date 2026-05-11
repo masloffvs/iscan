@@ -1,6 +1,14 @@
 # iscan
 
-To install dependencies:
+For a production install on an Arch host, use the Docker-first installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/masloffvs/iscan/main/installer.sh | bash
+```
+
+The installer now pulls `ghcr.io/masloffvs/iscan:latest`, writes the deployment stack to `/opt/iscan/docker-compose.yml`, keeps persistent runtime state in `/var/lib/iscan`, and starts `iscan-web` plus `iscan-vmserver` as Docker services. The generated `/var/lib/iscan/config.yml` contains placeholder Hunter credentials; replace them before serious use. The old qcow build/release path has been removed.
+
+To install local development dependencies:
 
 ```bash
 bun install

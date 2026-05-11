@@ -2,18 +2,27 @@ FROM archlinux:latest
 
 ENV LANG=C.UTF-8 \
 	LC_ALL=C.UTF-8 \
+	DOCKER_HOST=unix:///var/run/docker.sock \
 	XDG_RUNTIME_DIR=/tmp/runtime-iscan \
 	BUN_INSTALL=/root/.bun \
 	PATH=/root/.bun/bin:${PATH}
 
 RUN pacman -Syu --noconfirm --needed \
+	arch-install-scripts \
 	bash \
+	bubblewrap \
 	base-devel \
 	ca-certificates \
 	curl \
 	dbus \
+	ffmpeg \
+	dnsmasq \
+	docker \
+	docker-buildx \
+	docker-compose \
 	git \
 	gtk3 \
+	libpulse \
 	libx11 \
 	libxcomposite \
 	libxcursor \
@@ -25,10 +34,18 @@ RUN pacman -Syu --noconfirm --needed \
 	mesa \
 	nspr \
 	nss \
+	pipewire \
+	pipewire-pulse \
 	pkgconf \
 	python \
+	proxychains-ng \
+	qemu-base \
+	qemu-desktop \
 	sqlite \
+	tar \
 	unzip \
+	wireplumber \
+	xorg-server-xvfb \
 	xorg-xauth \
 	&& pacman -Scc --noconfirm \
 	&& curl -fsSL https://bun.sh/install | bash

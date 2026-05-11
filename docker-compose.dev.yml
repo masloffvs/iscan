@@ -2,7 +2,7 @@ x-iscan-common: &iscan-common
   build:
     context: .
     dockerfile: Dockerfile
-    target: build-base # Use the build-base stage to have all system deps but no compiled binary
+    target: deps # Use the deps stage to have all system deps and node_modules, but no compiled binary
   image: iscan-arch:dev
   privileged: true
   working_dir: /workspace

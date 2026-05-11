@@ -50,7 +50,7 @@ RUN pacman -Syu --noconfirm --needed \
     && pacman -Scc --noconfirm \
     && curl -fsSL https://bun.sh/install | bash
 
-# Stage 2: Builder for node_modules and web assets
+# Stage 2: Builder for node_modules
 FROM base AS builder
 
 RUN pacman -S --noconfirm --needed base-devel
@@ -60,18 +60,19 @@ COPY package.json bun.lock ./
 RUN bun install
 
 COPY . .
-RUN bun run build
 
 # Stage 3: Final runtime image
 FROM base AS runtime
 
 WORKDIR /workspace
 
-# Copy only what's needed for runtime
+# Copy node_modules and project source
 COPY --from=builder /workspace/node_modules ./node_modules
-COPY --from=builder /workspace/dist/ ./
-COPY --from=builder /workspace/nginx ./nginx
+COPY --from=builder /workspace/package.json /workspace/bun.lock /workspace/index.ts /workspace/config.yml ./
+COPY --from=builder /workspace/src ./src
+COPY --from=builder /workspace/web ./web
 COPY --from=builder /workspace/scripts ./scripts
+COPY --from=builder /workspace/nginx ./nginx
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/iscan-entrypoint
 RUN chmod +x /usr/local/bin/iscan-entrypoint \

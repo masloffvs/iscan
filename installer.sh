@@ -9,6 +9,7 @@ DOCKER_REGISTRY="${DOCKER_REGISTRY:-ghcr.io}"
 DOCKER_IMAGE_REPOSITORY="${DOCKER_IMAGE_REPOSITORY:-${REPO_SLUG}}"
 DOCKER_TAG="${DOCKER_TAG:-latest}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-${DOCKER_REGISTRY}/${DOCKER_IMAGE_REPOSITORY}:${DOCKER_TAG}}"
+DOCKER_WEB_IMAGE="${DOCKER_WEB_IMAGE:-${DOCKER_REGISTRY}/${DOCKER_IMAGE_REPOSITORY}-web:${DOCKER_TAG}}"
 
 INSTALL_TYPE="${INSTALL_TYPE:-docker}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/iscan}"
@@ -309,10 +310,10 @@ services:
         exec bun /workspace/index.ts --vmserver
 
   webui:
-    <<: *iscan-base
+    image: ${DOCKER_WEB_IMAGE}
     depends_on:
       - vmserver
-    command: ["bun", "/workspace/index.ts", "--web"]
+    restart: unless-stopped
 
   nginx:
     image: nginx:alpine

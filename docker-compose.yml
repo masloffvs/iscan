@@ -25,12 +25,13 @@ services:
   vmserver:
     <<: *iscan-common
     command: ["bun", "run", "index.ts", "--vmserver"]
-    # No public ports, only accessible via nginx or internal network
 
   webui:
-    <<: *iscan-common
-    command: ["bun", "run", "index.ts", "--web"]
-    # No public ports, only accessible via nginx or internal network
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: iscan-arch-web:latest
+    restart: unless-stopped
 
   nginx:
     image: nginx:alpine

@@ -297,7 +297,7 @@ services:
     tty: true
     command: ["bun", "/workspace/index.ts"]
 
-  iscan-vmserver:
+  vmserver:
     <<: *iscan-base
     ports:
       - "127.0.0.1:${VMSERVER_PORT}:36665"
@@ -310,26 +310,78 @@ services:
         Xvfb ${CONTAINER_DISPLAY} -screen 0 ${XVFB_SCREEN} -nolisten tcp -ac -noreset >/tmp/iscan-xvfb.log 2>&1 &
         exec bun /workspace/index.ts --vmserver
 
-  iscan-web:
+  webui:
     <<: *iscan-base
     depends_on:
-      - iscan-vmserver
+      - vmserver
     ports:
       - "127.0.0.1:${WEB_PORT}:8086"
     command: ["bun", "/workspace/index.ts", "--web"]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ${INSTALL_ROOT}/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - vmserver
+      - webui
+    restart: unless-stopped
 EOF
 
   run_root install -m 0644 "$tmp_dir/$COMPOSE_FILE_NAME" "$compose_path"
 }
 
+write_nginx_config() {
+  local nginx_path="$INSTALL_ROOT/nginx.conf"
+  
+  cat >"$tmp_dir/nginx.conf" <<EOF
+worker_processes auto;
+events { worker_connections 1024; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    keepalive_timeout 65;
+    upstream vmserver { server vmserver:36665; }
+    upstream webui { server webui:8086; }
+    server {
+        listen 80;
+        location / {
+            proxy_pass http://webui;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+        location /api/ {
+            proxy_pass http://vmserver/;
+            proxy_set_header Host \$host;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+        location /vm/ {
+            proxy_pass http://vmserver/vm/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_read_timeout 3600s;
+        }
+    }
+}
+EOF
+
+  run_root install -m 0644 "$tmp_dir/nginx.conf" "$nginx_path"
+}
+
 pull_and_start_stack() {
   local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
 
-  log "Pulling Docker image ${DOCKER_IMAGE}..."
+  log "Pulling Docker images..."
   run_root docker compose -f "$compose_path" pull
 
   log "Starting iscan Docker services..."
-  run_root docker compose -f "$compose_path" up -d iscan-vmserver iscan-web
+  run_root docker compose -f "$compose_path" up -d vmserver webui nginx
 }
 
 write_management_unit() {
@@ -347,7 +399,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${INSTALL_ROOT}
-ExecStart=/usr/bin/docker compose -f ${compose_path} up -d iscan-vmserver iscan-web
+ExecStart=/usr/bin/docker compose -f ${compose_path} up -d vmserver webui nginx
 ExecStop=/usr/bin/docker compose -f ${compose_path} down
 
 [Install]
@@ -420,6 +472,38 @@ print_summary() {
   warn "Edit ${STATE_DIR}/config.yml to replace placeholder Hunter credentials before serious use."
 }
 
+check_existing_installation() {
+  if [[ -f "$INSTALL_ROOT/$COMPOSE_FILE_NAME" ]] && [[ -f "$INSTALL_BIN_DIR/iscan" ]]; then
+    log "Existing installation detected at $INSTALL_ROOT."
+    return 0
+  fi
+  return 1
+}
+
+update_installation() {
+  log "Updating iscan installation..."
+  
+  local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
+  
+  # Verify integrity of essential files
+  if [[ ! -f "$compose_path" ]]; then
+    die "Integrity check failed: $compose_path is missing. Please re-install."
+  fi
+  
+  log "Pulling latest Docker images..."
+  run_root docker compose -f "$compose_path" pull
+
+  log "Rebuilding and restarting services..."
+  run_root docker compose -f "$compose_path" up -d --remove-orphans
+
+  if [[ -d /run/systemd/system ]] && systemctl is-active --quiet iscan-docker.service; then
+    log "Restarting iscan-docker.service..."
+    run_root systemctl restart iscan-docker.service
+  fi
+
+  log "Update completed successfully."
+}
+
 main() {
   require_linux_host
   require_arch_linux
@@ -428,12 +512,19 @@ main() {
 
   tmp_dir="$(mktemp -d -t iscan-installer.XXXXXX)"
 
+  if check_existing_installation; then
+    update_installation
+    print_summary
+    exit 0
+  fi
+
   install_packages
   verify_required_commands
   ensure_docker_runtime
   prepare_install_layout
   write_default_config
   write_compose_file
+  write_nginx_config
   write_launcher
   pull_and_start_stack
   write_management_unit

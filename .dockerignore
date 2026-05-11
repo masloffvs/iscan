@@ -1,8 +1,16 @@
 .git
+.github
 .iscan
+.vscode
+.tmp
+.tmp-web-check
 build
+dist
+web-build
 data
 node_modules
 *.log
-1.img
+*.img
 cloak-master.log
+Dockerfile
+docker-compose.yml

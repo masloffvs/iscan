@@ -19,11 +19,31 @@ x-iscan-common: &iscan-common
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
   stdin_open: true
   tty: true
+  restart: unless-stopped
 
 services:
-  iscan:
+  vmserver:
     <<: *iscan-common
-    command: ["bun", "run", "index.ts"]
+    command: ["bun", "run", "index.ts", "--vmserver"]
+    ports:
+      - "36665:36665"
+
+  webui:
+    <<: *iscan-common
+    command: ["bun", "run", "index.ts", "--web"]
+    ports:
+      - "8086:8086"
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - vmserver
+      - webui
+    restart: unless-stopped
 
 volumes:
   iscan-node-modules:

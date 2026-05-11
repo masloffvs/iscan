@@ -23,6 +23,7 @@ export async function startWebInterface(port = DEFAULT_WEB_PORT): Promise<never>
   const assets = await resolveWebAssets();
 
   const server = Bun.serve({
+    hostname: "0.0.0.0",
     port,
     fetch(request) {
       const url = new URL(request.url);

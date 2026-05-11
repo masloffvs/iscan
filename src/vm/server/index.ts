@@ -84,6 +84,7 @@ export async function startVmServer(moduleRuntime: ModuleRuntime<any>, port = DE
   }
 
   const server = Bun.serve<VmServerSocketData>({
+    hostname: "0.0.0.0",
     port,
     idleTimeout: VM_SERVER_IDLE_TIMEOUT_SECONDS,
     async fetch(request, server) {

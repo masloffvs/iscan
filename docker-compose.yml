@@ -24,7 +24,7 @@ x-iscan-common: &iscan-common
 services:
   vmserver:
     <<: *iscan-common
-    command: ["bun", "run", "index.ts", "--vmserver"]
+    command: ["./iscan", "--vmserver"]
 
   webui:
     build:

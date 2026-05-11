@@ -50,7 +50,7 @@ RUN pacman -Syu --noconfirm --needed \
     && pacman -Scc --noconfirm \
     && curl -fsSL https://bun.sh/install | bash
 
-# Stage 2: Builder for node_modules
+# Stage 2: Builder
 FROM base AS builder
 
 RUN pacman -S --noconfirm --needed base-devel
@@ -61,22 +61,24 @@ RUN bun install
 
 COPY . .
 
+# Compile the application into a standalone binary
+RUN bun build ./index.ts --compile --outfile iscan-bin
+
 # Stage 3: Final runtime image
 FROM base AS runtime
 
 WORKDIR /workspace
 
-# Copy node_modules and project source
-COPY --from=builder /workspace/node_modules ./node_modules
-COPY --from=builder /workspace/package.json /workspace/bun.lock /workspace/index.ts /workspace/config.yml ./
-COPY --from=builder /workspace/src ./src
-COPY --from=builder /workspace/web ./web
-COPY --from=builder /workspace/scripts ./scripts
+# Copy only the compiled binary and necessary runtime assets
+COPY --from=builder /workspace/iscan-bin ./iscan
+COPY --from=builder /workspace/config.yml ./config.yml
 COPY --from=builder /workspace/nginx ./nginx
+COPY --from=builder /workspace/scripts ./scripts
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/iscan-entrypoint
 RUN chmod +x /usr/local/bin/iscan-entrypoint \
     && mkdir -p /tmp/runtime-iscan
 
 ENTRYPOINT ["iscan-entrypoint"]
-CMD ["bun", "run", "index.ts"]
+# Run the compiled binary instead of bun run index.ts
+CMD ["./iscan"]

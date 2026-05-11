@@ -296,10 +296,12 @@ services:
     restart: "no"
     stdin_open: true
     tty: true
-    command: ["bun", "/workspace/index.ts"]
+    command: ["./iscan"]
 
   vmserver:
     <<: *iscan-base
+    ports:
+      - "127.0.0.1:${VMSERVER_PORT}:36665"
     command:
       - sh
       - -lc
@@ -307,7 +309,7 @@ services:
         mkdir -p ${CONTAINER_RUNTIME_DIR}
         chmod 700 ${CONTAINER_RUNTIME_DIR}
         Xvfb ${CONTAINER_DISPLAY} -screen 0 ${XVFB_SCREEN} -nolisten tcp -ac -noreset >/tmp/iscan-xvfb.log 2>&1 &
-        exec bun /workspace/index.ts --vmserver
+        exec ./iscan --vmserver
 
   webui:
     image: ${DOCKER_WEB_IMAGE}

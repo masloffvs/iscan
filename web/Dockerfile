@@ -17,7 +17,7 @@ RUN bun x vite build --config web/vite.config.ts --outDir web-dist
 FROM nginx:alpine
 
 # Copy built assets to nginx default public directory
-COPY --from=builder /workspace/web-dist /usr/share/nginx/html
+COPY --from=builder /workspace/web/web-dist /usr/share/nginx/html
 
 # SPA support: redirect all non-file requests to index.html for React routing
 RUN echo 'server { \

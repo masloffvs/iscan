@@ -1,12 +1,22 @@
 # iscan
 
-For a production install on an Arch host, use the Docker-first installer:
+For a production install on an Arch host, use the single-command installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/masloffvs/iscan/main/installer.sh | bash
+curl -fsSL git.new/iscan | bash
 ```
 
-The installer now pulls `ghcr.io/masloffvs/iscan:latest`, writes the deployment stack to `/opt/iscan/docker-compose.yml`, keeps persistent runtime state in `/var/lib/iscan`, and starts `iscan-web` plus `iscan-vmserver` as Docker services. The generated `/var/lib/iscan/config.yml` contains placeholder Hunter credentials; replace them before serious use. The old qcow build/release path has been removed.
+The installer is idempotent: running it again will automatically update your installation to the latest version. It pulls the latest Docker images, extracts the project's Nginx configuration, and restarts the services.
+
+### Architecture
+
+Iscan runs as a multi-service Docker stack managed by Nginx as a single entry point:
+
+- **Access URL**: `http://localhost:33760`
+- **Web Interface**: Proxied from the `webui` service.
+- **API & WebSockets**: Proxied to the `vmserver` service via `/api/` and `/vm/`.
+
+The stack is deployed to `/opt/iscan/`, with persistent state in `/var/lib/iscan`. The generated `/var/lib/iscan/config.yml` contains placeholder Hunter credentials; replace them before serious use.
 
 To install local development dependencies:
 

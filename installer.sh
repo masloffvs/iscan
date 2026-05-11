@@ -16,7 +16,7 @@ INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
 STATE_DIR="${STATE_DIR:-/var/lib/iscan}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 COMPOSE_FILE_NAME="${COMPOSE_FILE_NAME:-docker-compose.yml}"
-WEB_PORT="${WEB_PORT:-8086}"
+WEB_PORT="${WEB_PORT:-33760}"
 VMSERVER_PORT="${VMSERVER_PORT:-36665}"
 CONTAINER_WORKDIR="${CONTAINER_WORKDIR:-/var/lib/iscan}"
 CONTAINER_DISPLAY="${CONTAINER_DISPLAY:-:99}"
@@ -299,8 +299,6 @@ services:
 
   vmserver:
     <<: *iscan-base
-    ports:
-      - "127.0.0.1:${VMSERVER_PORT}:36665"
     command:
       - sh
       - -lc
@@ -314,14 +312,12 @@ services:
     <<: *iscan-base
     depends_on:
       - vmserver
-    ports:
-      - "127.0.0.1:${WEB_PORT}:8086"
     command: ["bun", "/workspace/index.ts", "--web"]
 
   nginx:
     image: nginx:alpine
     ports:
-      - "80:80"
+      - "${WEB_PORT}:80"
     volumes:
       - ${INSTALL_ROOT}/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
@@ -467,10 +463,10 @@ print_summary() {
   log "  launcher     : ${INSTALL_BIN_DIR}/iscan"
   log "  state dir    : ${STATE_DIR}"
   log "  config       : ${STATE_DIR}/config.yml"
-  log "  web url      : http://127.0.0.1:${WEB_PORT}"
-  log "  vm api       : http://127.0.0.1:${VMSERVER_PORT}"
+  log "  access url   : http://127.0.0.1:${WEB_PORT}"
   warn "Edit ${STATE_DIR}/config.yml to replace placeholder Hunter credentials before serious use."
 }
+
 
 check_existing_installation() {
   if [[ -f "$INSTALL_ROOT/$COMPOSE_FILE_NAME" ]] && [[ -f "$INSTALL_BIN_DIR/iscan" ]]; then

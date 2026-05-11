@@ -25,21 +25,19 @@ services:
   vmserver:
     <<: *iscan-common
     command: ["bun", "run", "index.ts", "--vmserver"]
-    ports:
-      - "36665:36665"
+    # No public ports, only accessible via nginx or internal network
 
   webui:
     <<: *iscan-common
     command: ["bun", "run", "index.ts", "--web"]
-    ports:
-      - "8086:8086"
+    # No public ports, only accessible via nginx or internal network
 
   nginx:
     image: nginx:alpine
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "80:80"
+      - "33760:80"
     depends_on:
       - vmserver
       - webui

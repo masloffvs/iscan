@@ -6,7 +6,13 @@ For a production install on an Arch host, use the single-command installer:
 curl -fsSL git.new/iscan | bash
 ```
 
-The installer is idempotent: running it again will automatically update your installation to the latest version. It pulls the latest Docker images, extracts the project's Nginx configuration, and restarts the services.
+The installer is idempotent: running it again will automatically update your installation to the latest version. You can also use the built-in upgrade command after the initial installation:
+
+```bash
+iscan-upgrade
+```
+
+It pulls the latest Docker images, extracts the project's Nginx configuration, and restarts the services.
 
 ### Architecture
 

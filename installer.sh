@@ -465,6 +465,17 @@ update_installation() {
   log "Update completed successfully."
 }
 
+write_upgrade_tool() {
+  local upgrade_path="$tmp_dir/iscan-upgrade"
+  log "Installing iscan-upgrade tool..."
+  cat >"$upgrade_path" <<EOF
+#!/usr/bin/env bash
+# iscan-upgrade: convenience wrapper to update the system
+curl -fsSL git.new/iscan | bash
+EOF
+  run_root install -m 0755 "$upgrade_path" "$INSTALL_BIN_DIR/iscan-upgrade"
+}
+
 main() {
   require_linux_host
   require_arch_linux
@@ -475,6 +486,7 @@ main() {
 
   if check_existing_installation; then
     update_installation
+    write_upgrade_tool
     print_summary
     exit 0
   fi
@@ -486,6 +498,7 @@ main() {
   write_default_config
   write_compose_file
   write_launcher
+  write_upgrade_tool
   pull_and_start_stack
   write_management_unit
 

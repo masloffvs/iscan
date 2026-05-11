@@ -329,52 +329,14 @@ EOF
   run_root install -m 0644 "$tmp_dir/$COMPOSE_FILE_NAME" "$compose_path"
 }
 
-write_nginx_config() {
-  local nginx_path="$INSTALL_ROOT/nginx.conf"
-  
-  cat >"$tmp_dir/nginx.conf" <<EOF
-worker_processes auto;
-events { worker_connections 1024; }
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    sendfile on;
-    keepalive_timeout 65;
-    upstream vmserver { server vmserver:36665; }
-    upstream webui { server webui:8086; }
-    server {
-        listen 80;
-        location / {
-            proxy_pass http://webui;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-        }
-        location /api/ {
-            proxy_pass http://vmserver/;
-            proxy_set_header Host \$host;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
-        location /vm/ {
-            proxy_pass http://vmserver/vm/;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_read_timeout 3600s;
-        }
-    }
-}
-EOF
-
-  run_root install -m 0644 "$tmp_dir/nginx.conf" "$nginx_path"
-}
-
 pull_and_start_stack() {
   local compose_path="$INSTALL_ROOT/$COMPOSE_FILE_NAME"
 
   log "Pulling Docker images..."
   run_root docker compose -f "$compose_path" pull
+
+  log "Extracting nginx configuration from image..."
+  run_root bash -c "docker run --rm --entrypoint cat ${DOCKER_IMAGE} /workspace/nginx/nginx.conf > ${INSTALL_ROOT}/nginx.conf"
 
   log "Starting iscan Docker services..."
   run_root docker compose -f "$compose_path" up -d vmserver webui nginx
@@ -489,6 +451,9 @@ update_installation() {
   log "Pulling latest Docker images..."
   run_root docker compose -f "$compose_path" pull
 
+  log "Updating nginx configuration from image..."
+  run_root bash -c "docker run --rm --entrypoint cat ${DOCKER_IMAGE} /workspace/nginx/nginx.conf > ${INSTALL_ROOT}/nginx.conf"
+
   log "Rebuilding and restarting services..."
   run_root docker compose -f "$compose_path" up -d --remove-orphans
 
@@ -520,7 +485,6 @@ main() {
   prepare_install_layout
   write_default_config
   write_compose_file
-  write_nginx_config
   write_launcher
   pull_and_start_stack
   write_management_unit

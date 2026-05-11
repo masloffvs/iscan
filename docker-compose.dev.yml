@@ -1,0 +1,47 @@
+x-iscan-common: &iscan-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: base # Use the base stage to have all system deps but no compiled binary
+  image: iscan-arch:dev
+  privileged: true
+  working_dir: /workspace
+  environment:
+    DISPLAY: ${DISPLAY:-:0}
+    DOCKER_HOST: unix:///var/run/docker.sock
+    XDG_RUNTIME_DIR: /tmp/runtime-iscan
+  volumes:
+    - .:/workspace
+    - iscan-node-modules:/workspace/node_modules
+    - iscan-bun-cache:/root/.bun/install/cache
+    - /var/run/docker.sock:/var/run/docker.sock
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  stdin_open: true
+  tty: true
+
+services:
+  vmserver:
+    <<: *iscan-common
+    command: ["bun", "--watch", "index.ts", "--vmserver"]
+    ports:
+      - "36665:36665"
+
+  webui:
+    <<: *iscan-common
+    command: ["bun", "run", "dev:web"]
+    ports:
+      - "8086:8086"
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "33760:80"
+    depends_on:
+      - vmserver
+      - webui
+
+volumes:
+  iscan-node-modules:
+  iscan-bun-cache:

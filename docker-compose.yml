@@ -12,9 +12,6 @@ x-iscan-common: &iscan-common
     DOCKER_HOST: unix:///var/run/docker.sock
     XDG_RUNTIME_DIR: /tmp/runtime-iscan
   volumes:
-    - .:/workspace
-    - iscan-node-modules:/workspace/node_modules
-    - iscan-bun-cache:/root/.bun/install/cache
     - /var/run/docker.sock:/var/run/docker.sock
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
   stdin_open: true
@@ -43,7 +40,3 @@ services:
       - vmserver
       - webui
     restart: unless-stopped
-
-volumes:
-  iscan-node-modules:
-  iscan-bun-cache:
